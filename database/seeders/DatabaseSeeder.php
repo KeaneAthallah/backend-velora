@@ -15,11 +15,12 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // User::factory(10)->create();
-
+        // Default dev account: admin@velora.test / password
         User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
+            'name' => 'Kendra Admin',
+            'email' => 'admin@velora.test',
+            'password' => 'password',
+            'status' => 'active',
         ]);
     }
 }
