@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(php -v)",
+      "Shell(php artisan --version)",
+      "Shell(php artisan db:show 2 >& 1)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
