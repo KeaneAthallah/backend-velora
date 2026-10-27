@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use App\Models\Permission;
 use App\Models\Role;
 use App\Services\AuthorizationService;
 use Illuminate\Http\Request;
@@ -15,6 +14,8 @@ class RoleController extends Controller
     public function index(Request $request)
     {
         $businessId = $request->attributes->get('business_id');
+        $this->authz->requirePermission($request->user(), 'employees.view', $businessId);
+
         return $this->success(Role::where('business_id', $businessId)->with('permissions')->get());
     }
 
@@ -39,6 +40,7 @@ class RoleController extends Controller
         if (! empty($data['permission_ids'])) {
             $role->permissions()->sync($data['permission_ids']);
         }
+
         return $this->success($role->load('permissions'), 'Created', 201);
     }
 
@@ -59,6 +61,7 @@ class RoleController extends Controller
         if (isset($data['permission_ids'])) {
             $role->permissions()->sync($data['permission_ids']);
         }
+
         return $this->success($role->load('permissions'));
     }
 
@@ -73,6 +76,7 @@ class RoleController extends Controller
             return $this->error('Cannot delete system role', 422);
         }
         $role->delete();
+
         return $this->success(null, 'Deleted');
     }
 }

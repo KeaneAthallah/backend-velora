@@ -40,8 +40,10 @@ class ReportController extends Controller
         $this->authz->requirePermission($request->user(), 'reports.view', $businessId);
         $from = $request->input('from', now()->startOfDay()->toDateTimeString());
         $to = $request->input('to', now()->endOfDay()->toDateTimeString());
-        $rows = SaleItem::whereHas('sale', function ($q) use ($businessId, $from, $to) {
+        $outletId = $request->input('outlet_id');
+        $rows = SaleItem::whereHas('sale', function ($q) use ($businessId, $from, $to, $outletId) {
             $q->where('business_id', $businessId)->where('status', 'completed')->whereBetween('created_at', [$from, $to]);
+            if ($outletId) $q->where('outlet_id', $outletId);
         })->selectRaw('product_id, product_name, SUM(quantity) as qty, SUM(line_total) as total')
             ->groupBy('product_id', 'product_name')
             ->get();
@@ -63,7 +65,10 @@ class ReportController extends Controller
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'inventory.view', $businessId);
         $threshold = (float) $request->input('threshold', 5);
-        $rows = InventoryBalance::where('business_id', $businessId)->where('quantity', '<=', $threshold)->with('product', 'outlet')->get();
+        $outletId = $request->input('outlet_id');
+        $q = InventoryBalance::where('business_id', $businessId)->where('quantity', '<=', $threshold)->with('product', 'outlet');
+        if ($outletId) $q->where('outlet_id', $outletId);
+        $rows = $q->get();
         return $this->success($rows);
     }
 }

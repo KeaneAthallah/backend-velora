@@ -7,12 +7,16 @@ use App\Models\GoodsReceipt;
 use App\Models\GoodsReceiptItem;
 use App\Models\InventoryBalance;
 use App\Models\InventoryMovement;
+use App\Models\Outlet;
 use App\Models\Product;
+use App\Models\ProductVariant;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Services\AuthorizationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class PurchaseOrderController extends Controller
 {
@@ -22,7 +26,20 @@ class PurchaseOrderController extends Controller
     {
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'purchasing.view', $businessId);
-        return $this->success(PurchaseOrder::where('business_id', $businessId)->with('items', 'supplier')->paginate(50));
+        $q = PurchaseOrder::where('business_id', $businessId)->with('items.product', 'supplier', 'outlet');
+        if ($request->filled('outlet_id')) $q->where('outlet_id', $request->input('outlet_id'));
+        if ($request->filled('status')) $q->where('status', $request->input('status'));
+        if ($request->filled('q')) {
+            $term = '%' . $request->input('q') . '%';
+            $q->where(function ($inner) use ($term) {
+                $inner->where('po_number', 'like', $term)
+                    ->orWhereHas('supplier', function ($supplier) use ($term) {
+                        $supplier->where('name', 'like', $term);
+                    });
+            });
+        }
+        $perPage = min(max((int) $request->input('per_page', 50), 1), 100);
+        return $this->success($q->latest()->paginate($perPage));
     }
 
     public function store(Request $request)
@@ -31,13 +48,26 @@ class PurchaseOrderController extends Controller
         $outletId = $request->attributes->get('outlet_id') ?? $request->input('outlet_id');
         $this->authz->requirePermission($request->user(), 'purchasing.manage', $businessId);
         $data = $request->validate([
-            'supplier_id' => 'required|integer|exists:suppliers,id',
+            'supplier_id' => [
+                'required',
+                'integer',
+                Rule::exists('suppliers', 'id')->where(fn ($query) => $query->where('business_id', $businessId)),
+            ],
             'outlet_id' => 'nullable|integer',
-            'po_number' => 'nullable|string|max:64',
+            'po_number' => [
+                'nullable',
+                'string',
+                'max:64',
+                Rule::unique('purchase_orders', 'po_number')->where(fn ($query) => $query->where('business_id', $businessId)),
+            ],
             'notes' => 'nullable|string',
             'expected_at' => 'nullable|date',
             'items' => 'required|array|min:1',
-            'items.*.product_id' => 'required|integer|exists:products,id',
+            'items.*.product_id' => [
+                'required',
+                'integer',
+                Rule::exists('products', 'id')->where(fn ($query) => $query->where('business_id', $businessId)),
+            ],
             'items.*.product_variant_id' => 'nullable|integer',
             'items.*.quantity' => 'required|numeric|min:0.0001',
             'items.*.unit_cost' => 'required|numeric|min:0',
@@ -45,6 +75,41 @@ class PurchaseOrderController extends Controller
         ]);
         if (! $outletId && ! empty($data['outlet_id'])) $outletId = $data['outlet_id'];
         if (! $outletId) return $this->error('Outlet required', 422);
+        if (! empty($data['outlet_id']) && (int) $data['outlet_id'] !== (int) $outletId) {
+            throw ValidationException::withMessages(['outlet_id' => 'The outlet must match the active outlet context.']);
+        }
+
+        $outlet = Outlet::where('id', $outletId)->where('business_id', $businessId)->first();
+        if (! $outlet) {
+            throw ValidationException::withMessages(['outlet_id' => 'The selected outlet does not belong to this business.']);
+        }
+
+        $lines = collect($data['items']);
+        $lineKeys = $lines->map(fn ($item) => $item['product_id'] . ':' . ($item['product_variant_id'] ?? ''))->all();
+        if (count($lineKeys) !== count(array_unique($lineKeys))) {
+            throw ValidationException::withMessages(['items' => 'Each product and variant can only appear once per purchase order.']);
+        }
+
+        $productIds = $lines->pluck('product_id')->unique()->values();
+        $productMap = Product::where('business_id', $businessId)->whereIn('id', $productIds)->get()->keyBy('id');
+        if ($productMap->count() !== $productIds->count()) {
+            throw ValidationException::withMessages(['items' => 'Every product must belong to this business.']);
+        }
+
+        $variantIds = $lines->pluck('product_variant_id')->filter()->unique()->values();
+        $variantMap = $variantIds->isEmpty()
+            ? collect()
+            : ProductVariant::whereIn('id', $variantIds)->get()->keyBy('id');
+        foreach ($lines as $index => $item) {
+            if (empty($item['product_variant_id'])) continue;
+            $variant = $variantMap->get($item['product_variant_id']);
+            if (! $variant || (int) $variant->product_id !== (int) $item['product_id']) {
+                throw ValidationException::withMessages([
+                    "items.$index.product_variant_id" => 'The selected variant does not belong to the product.',
+                ]);
+            }
+        }
+
         $poNumber = $data['po_number'] ?? ('PO-' . now()->format('Ymd') . '-' . uniqid());
         $po = DB::transaction(function () use ($businessId, $outletId, $data, $poNumber, $request) {
             $subtotal = '0'; $tax = '0'; $total = '0';
@@ -87,6 +152,7 @@ class PurchaseOrderController extends Controller
     {
         $businessId = $request->attributes->get('business_id');
         if ($purchaseOrder->business_id !== $businessId) return $this->error('Not found', 404);
+        $this->authz->requirePermission($request->user(), 'purchasing.view', $businessId);
         return $this->success($purchaseOrder->load('items', 'supplier'));
     }
 
@@ -105,6 +171,7 @@ class PurchaseOrderController extends Controller
     {
         $businessId = $request->attributes->get('business_id');
         if ($purchaseOrder->business_id !== $businessId) return $this->error('Not found', 404);
+        $this->authz->requirePermission($request->user(), 'purchasing.manage', $businessId);
         if (! in_array($purchaseOrder->status, ['draft', 'cancelled'])) return $this->error('Cannot delete', 422);
         $purchaseOrder->delete();
         return $this->success(null, 'Deleted');
@@ -126,28 +193,68 @@ class PurchaseOrderController extends Controller
     public function receive(Request $request, PurchaseOrder $purchaseOrder)
     {
         $businessId = $request->attributes->get('business_id');
-        $outletId = $request->attributes->get('outlet_id') ?? $request->input('outlet_id') ?? $purchaseOrder->outlet_id;
         if ($purchaseOrder->business_id !== $businessId) return $this->error('Not found', 404);
         $this->authz->requirePermission($request->user(), 'purchasing.manage', $businessId);
         $data = $request->validate([
             'items' => 'required|array|min:1',
-            'items.*.purchase_order_item_id' => 'required|integer',
+            'items.*.purchase_order_item_id' => 'required|integer|distinct',
             'items.*.quantity' => 'required|numeric|min:0.0001',
-            'items.*.unit_cost' => 'nullable|numeric',
+            'items.*.unit_cost' => 'nullable|numeric|min:0',
         ]);
-        DB::transaction(function () use ($purchaseOrder, $data, $businessId, $outletId, $request) {
+        if (! in_array($purchaseOrder->status, ['approved', 'partially_received'], true)) {
+            return $this->error('Only approved or partially received purchase orders can be received', 422);
+        }
+        $outlet = Outlet::where('id', $purchaseOrder->outlet_id)->where('business_id', $businessId)->first();
+        if (! $outlet) return $this->error('Purchase order outlet not found in this business', 422);
+        $outletId = $outlet->id;
+        $itemIds = collect($data['items'])->pluck('purchase_order_item_id');
+        if ($itemIds->count() !== $itemIds->unique()->count()) {
+            throw ValidationException::withMessages(['items' => 'Each purchase order line can only be received once per receipt.']);
+        }
+
+        DB::transaction(function () use ($purchaseOrder, $data, $businessId, $outletId, $itemIds, $request) {
+            $po = PurchaseOrder::whereKey($purchaseOrder->id)->lockForUpdate()->firstOrFail();
+            if (! in_array($po->status, ['approved', 'partially_received'], true)) {
+                throw ValidationException::withMessages(['status' => 'Only approved or partially received purchase orders can be received.']);
+            }
+            $poItems = PurchaseOrderItem::where('purchase_order_id', $po->id)
+                ->whereIn('id', $itemIds)
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
+            if ($poItems->count() !== $itemIds->count()) {
+                throw ValidationException::withMessages(['items' => 'Every line must belong to this purchase order.']);
+            }
+            foreach ($data['items'] as $index => $it) {
+                $poi = $poItems->get($it['purchase_order_item_id']);
+                $remaining = bcsub((string) $poi->quantity, (string) $poi->received_quantity, 4);
+                if (bccomp((string) $it['quantity'], $remaining, 4) === 1) {
+                    throw ValidationException::withMessages([
+                        "items.$index.quantity" => 'Quantity exceeds the remaining quantity for this line.',
+                    ]);
+                }
+                $productBelongs = Product::where('id', $poi->product_id)
+                    ->where('business_id', $businessId)
+                    ->exists();
+                if (! $productBelongs) {
+                    throw ValidationException::withMessages([
+                        "items.$index.purchase_order_item_id" => 'The line product does not belong to this business.',
+                    ]);
+                }
+            }
+
             $receipt = GoodsReceipt::create([
                 'business_id' => $businessId,
                 'outlet_id' => $outletId,
-                'purchase_order_id' => $purchaseOrder->id,
-                'supplier_id' => $purchaseOrder->supplier_id,
+                'purchase_order_id' => $po->id,
+                'supplier_id' => $po->supplier_id,
                 'receipt_number' => 'GR-' . now()->format('Ymd') . '-' . uniqid(),
                 'status' => 'completed',
                 'received_by' => $request->user()->id,
                 'received_at' => now(),
             ]);
             foreach ($data['items'] as $it) {
-                $poi = PurchaseOrderItem::findOrFail($it['purchase_order_item_id']);
+                $poi = $poItems->get($it['purchase_order_item_id']);
                 $qty = (string) $it['quantity'];
                 $unitCost = (string) ($it['unit_cost'] ?? $poi->unit_cost);
                 GoodsReceiptItem::create([
@@ -157,10 +264,8 @@ class PurchaseOrderController extends Controller
                     'quantity' => $qty,
                     'unit_cost' => $unitCost,
                 ]);
-                // update PO item received
                 $poi->received_quantity = bcadd((string) $poi->received_quantity, $qty, 4);
                 $poi->save();
-                // inventory increment
                 $bal = InventoryBalance::lockForUpdate()->firstOrCreate(
                     ['outlet_id' => $outletId, 'product_id' => $poi->product_id, 'product_variant_id' => $poi->product_variant_id],
                     ['business_id' => $businessId, 'quantity' => 0, 'reserved_quantity' => 0]
@@ -180,15 +285,16 @@ class PurchaseOrderController extends Controller
                     'actor_id' => $request->user()->id,
                 ]);
             }
-            // update PO status
-            $totalQty = $purchaseOrder->items->sum('quantity');
-            $receivedQty = $purchaseOrder->items->sum('received_quantity');
-            if (bccomp((string) $receivedQty, (string) $totalQty, 4) >= 0) {
-                $purchaseOrder->status = 'completed';
-            } else {
-                $purchaseOrder->status = 'partially_received';
+
+            $po->load('items');
+            $totalQty = '0';
+            $receivedQty = '0';
+            foreach ($po->items as $line) {
+                $totalQty = bcadd($totalQty, (string) $line->quantity, 4);
+                $receivedQty = bcadd($receivedQty, (string) $line->received_quantity, 4);
             }
-            $purchaseOrder->save();
+            $po->status = bccomp($receivedQty, $totalQty, 4) >= 0 ? 'completed' : 'partially_received';
+            $po->save();
         });
         return $this->success($purchaseOrder->fresh()->load('items'), 'Received');
     }

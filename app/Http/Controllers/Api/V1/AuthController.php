@@ -83,6 +83,9 @@ class AuthController extends Controller
         $status = Password::reset($request->only('email', 'password', 'password_confirmation', 'token'), function ($user, $password) {
             $user->forceFill(['password' => Hash::make($password)])->save();
         });
+        if ($status !== Password::PASSWORD_RESET) {
+            return $this->error(__($status), 422, [], 'PASSWORD_RESET_FAILED');
+        }
         return $this->success(null, __($status));
     }
 }

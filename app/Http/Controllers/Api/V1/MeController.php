@@ -9,7 +9,7 @@ class MeController extends Controller
 {
     public function show(Request $request)
     {
-        $user = $request->user()->load('businessMemberships.business', 'businessMemberships.role', 'outletMemberships.outlet');
+        $user = $request->user()->load('businessMemberships.business', 'businessMemberships.role.permissions', 'outletMemberships.outlet');
         return $this->success($user);
     }
 }
