@@ -18,6 +18,8 @@ class PermissionSeeder extends Seeder
             'products.view', 'products.manage',
             'inventory.view', 'inventory.adjust',
             'customers.view', 'customers.manage',
+            'loyalty.view', 'loyalty.manage',
+            'promotions.view', 'promotions.manage',
             'suppliers.view', 'suppliers.manage',
             'purchasing.view', 'purchasing.manage',
             'menu.view', 'menu.manage', 'menu.availability', 'menu.dayparts',

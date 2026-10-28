@@ -3,12 +3,16 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\Customer;
 use App\Models\DiningTable;
 use App\Models\Outlet;
 use App\Models\Sale;
+use App\Models\SaleItem;
 use App\Services\AuthorizationService;
 use App\Services\KitchenService;
+use App\Services\LoyaltyService;
 use App\Services\PaymentService;
+use App\Services\PromotionService;
 use App\Services\SaleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -31,6 +35,8 @@ class OrderController extends Controller
         protected SaleService $saleService,
         protected KitchenService $kitchen,
         protected PaymentService $payments,
+        protected PromotionService $promotions,
+        protected LoyaltyService $loyalty,
     ) {}
 
     public function index(Request $request)
@@ -107,6 +113,10 @@ class OrderController extends Controller
             return $this->error('Not found', 404);
         }
 
+        if (! empty($data['customer_id']) && ! $this->customerBelongsTo($businessId, (int) $data['customer_id'])) {
+            return $this->error('Not found', 404);
+        }
+
         if (! empty($data['idempotency_key'])) {
             $existing = Sale::where('business_id', $businessId)
                 ->where('idempotency_key', $data['idempotency_key'])
@@ -142,6 +152,11 @@ class OrderController extends Controller
                     $businessId,
                     $outletId,
                     $data['tax_rate_id'] ?? null,
+                    [
+                        'promotion_code' => $data['promotion_code'] ?? null,
+                        'customer_id' => $data['customer_id'] ?? null,
+                        'redeem_points' => (string) ($data['redeem_points'] ?? '0'),
+                    ],
                 );
 
                 $orderNumber = $this->saleService->nextOrderNumber($outlet, $orderType);
@@ -157,10 +172,6 @@ class OrderController extends Controller
                     'order_type' => $orderType,
                     'order_status' => 'open',
                     'status' => 'draft',
-                    'subtotal' => $priced['subtotal'],
-                    'discount_amount' => $priced['discount_amount'],
-                    'tax_amount' => $priced['tax_amount'],
-                    'total' => $priced['total'],
                     'paid_amount' => 0,
                     'change_amount' => 0,
                     'notes' => $data['notes'] ?? null,
@@ -169,6 +180,7 @@ class OrderController extends Controller
                 ]);
 
                 $this->saleService->attachItems($sale, $priced['items']);
+                $this->saleService->applyPricing($sale, $priced);
 
                 return $sale;
             });
@@ -196,6 +208,9 @@ class OrderController extends Controller
             'customer_id' => 'sometimes|nullable|integer|exists:customers,id',
             'table_id' => 'sometimes|nullable|integer',
             'tax_rate_id' => 'nullable|integer',
+            'promotion_code' => 'sometimes|nullable|string|max:64',
+            'redeem_points' => 'sometimes|nullable|numeric|min:0',
+            'apply_promotions' => 'sometimes|boolean',
             'notes' => 'sometimes|nullable|string',
             'fulfilment' => 'sometimes|nullable|array',
             'fulfilment.contact_name' => 'nullable|string|max:255',
@@ -212,6 +227,10 @@ class OrderController extends Controller
             'items.*.option_ids.*' => 'integer',
             'items.*.notes' => 'nullable|string|max:255',
         ]);
+
+        if (array_key_exists('customer_id', $data) && ! empty($data['customer_id']) && ! $this->customerBelongsTo($businessId, (int) $data['customer_id'])) {
+            return $this->error('Not found', 404);
+        }
 
         $orderType = $data['order_type'] ?? $sale->order_type;
         $fulfilment = array_key_exists('fulfilment', $data) ? $data['fulfilment'] : $sale->fulfilment;
@@ -251,12 +270,31 @@ class OrderController extends Controller
                 }
                 $sale->save();
 
-                if (! empty($data['items'])) {
+                $reprice = ! empty($data['items'])
+                    || array_key_exists('promotion_code', $data)
+                    || array_key_exists('redeem_points', $data)
+                    || array_key_exists('customer_id', $data);
+
+                if ($reprice) {
+                    $items = ! empty($data['items'])
+                        ? $data['items']
+                        : $this->saleItemsToInput($sale->items);
+
                     $priced = $this->saleService->priceItems(
-                        $data['items'],
+                        $items,
                         $businessId,
                         $sale->outlet_id,
                         $data['tax_rate_id'] ?? null,
+                        [
+                            'promotion_code' => array_key_exists('promotion_code', $data)
+                                ? $data['promotion_code']
+                                : $sale->promotion_code,
+                            'customer_id' => $sale->customer_id,
+                            'redeem_points' => array_key_exists('redeem_points', $data)
+                                ? (string) ($data['redeem_points'] ?? '0')
+                                : (string) $sale->loyalty_points_redeemed,
+                            'apply_promotions' => $data['apply_promotions'] ?? true,
+                        ],
                     );
                     $this->saleService->replaceItems($sale, $priced);
                 }
@@ -337,10 +375,45 @@ class OrderController extends Controller
             'payments.*.provider' => 'nullable|string|max:64',
             'payments.*.external_id' => 'nullable|string|max:128',
             'idempotency_key' => 'nullable|string|max:128',
+            'promotion_code' => 'sometimes|nullable|string|max:64',
+            'redeem_points' => 'sometimes|nullable|numeric|min:0',
+            'customer_id' => 'sometimes|nullable|integer|exists:customers,id',
         ]);
+
+        if (array_key_exists('customer_id', $data) && ! empty($data['customer_id']) && ! $this->customerBelongsTo($businessId, (int) $data['customer_id'])) {
+            return $this->error('Not found', 404);
+        }
 
         try {
             DB::transaction(function () use ($sale, $data, $request) {
+                if (array_key_exists('customer_id', $data)) {
+                    $sale->customer_id = $data['customer_id'];
+                    $sale->save();
+                }
+
+                // A promotion or redemption can be chosen at the till, so the
+                // lines are priced again before the sale is finalised.
+                $reprice = array_key_exists('promotion_code', $data) || array_key_exists('redeem_points', $data);
+
+                if ($reprice) {
+                    $priced = $this->saleService->priceItems(
+                        $this->saleItemsToInput($sale->items),
+                        $sale->business_id,
+                        $sale->outlet_id,
+                        null,
+                        [
+                            'promotion_code' => array_key_exists('promotion_code', $data)
+                                ? $data['promotion_code']
+                                : $sale->promotion_code,
+                            'customer_id' => $sale->customer_id,
+                            'redeem_points' => array_key_exists('redeem_points', $data)
+                                ? (string) ($data['redeem_points'] ?? '0')
+                                : (string) $sale->loyalty_points_redeemed,
+                        ],
+                    );
+                    $this->saleService->replaceItems($sale, $priced);
+                }
+
                 $this->saleService->deductStock($sale, $sale->outlet_id, $request->user()->id);
 
                 $outlet = Outlet::findOrFail($sale->outlet_id);
@@ -352,6 +425,10 @@ class OrderController extends Controller
                 $sale->save();
 
                 $this->kitchen->syncFromOrderStatus($sale, 'completed');
+
+                $this->promotions->recordRedemption($sale);
+                $this->loyalty->fulfilRedemption($sale);
+                $this->loyalty->earn($sale);
 
                 if (! empty($data['payments'])) {
                     $this->payments->recordPayments(
@@ -420,9 +497,40 @@ class OrderController extends Controller
             'items.*.option_ids' => 'nullable|array',
             'items.*.option_ids.*' => 'integer',
             'items.*.notes' => 'nullable|string|max:255',
+            'promotion_code' => 'nullable|string|max:64',
+            'redeem_points' => 'nullable|numeric|min:0',
         ]);
 
         return $data;
+    }
+
+    /**
+     * Turn persisted lines back into the shape the pricing routine expects.
+     *
+     * @param  iterable<int, SaleItem>  $items
+     * @return array<int, array<string, mixed>>
+     */
+    private function saleItemsToInput(iterable $items): array
+    {
+        $input = [];
+
+        foreach ($items as $item) {
+            $input[] = [
+                'product_id' => $item->product_id,
+                'product_variant_id' => $item->product_variant_id,
+                'quantity' => (string) $item->quantity,
+                'discount_amount' => (string) ($item->line_discount_amount ?? $item->discount_amount),
+                'option_ids' => $item->option_ids ?? [],
+                'notes' => $item->notes,
+            ];
+        }
+
+        return $input;
+    }
+
+    private function customerBelongsTo(int $businessId, int $customerId): bool
+    {
+        return Customer::where('id', $customerId)->where('business_id', $businessId)->exists();
     }
 
     private function findTable(int $businessId, int $outletId, int $tableId): ?DiningTable

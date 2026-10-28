@@ -70,6 +70,17 @@ Route::prefix('v1')->group(function () {
             Route::apiResource('customers', \App\Http\Controllers\Api\V1\CustomerController::class);
             Route::apiResource('suppliers', \App\Http\Controllers\Api\V1\SupplierController::class);
 
+            // loyalty & promotions
+            Route::get('loyalty/program', [\App\Http\Controllers\Api\V1\LoyaltyController::class, 'show']);
+            Route::put('loyalty/program', [\App\Http\Controllers\Api\V1\LoyaltyController::class, 'update']);
+            Route::get('loyalty/transactions', [\App\Http\Controllers\Api\V1\LoyaltyController::class, 'transactions']);
+            Route::post('customers/{customer}/loyalty/adjust', [\App\Http\Controllers\Api\V1\LoyaltyController::class, 'adjust']);
+            Route::get('promotions', [\App\Http\Controllers\Api\V1\PromotionController::class, 'index']);
+            Route::post('promotions', [\App\Http\Controllers\Api\V1\PromotionController::class, 'store']);
+            Route::post('promotions/preview', [\App\Http\Controllers\Api\V1\PromotionController::class, 'preview']);
+            Route::put('promotions/{promotion}', [\App\Http\Controllers\Api\V1\PromotionController::class, 'update']);
+            Route::delete('promotions/{promotion}', [\App\Http\Controllers\Api\V1\PromotionController::class, 'destroy']);
+
             // inventory
             Route::get('inventory/balances', [\App\Http\Controllers\Api\V1\InventoryController::class, 'balances']);
             Route::post('inventory/adjust', [\App\Http\Controllers\Api\V1\InventoryController::class, 'adjust']);

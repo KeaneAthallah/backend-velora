@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\Customer;
 use App\Models\DiningTable;
 use App\Models\InventoryBalance;
 use App\Models\InventoryMovement;
@@ -11,7 +12,9 @@ use App\Models\Payment;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Services\AuthorizationService;
+use App\Services\LoyaltyService;
 use App\Services\PaymentService;
+use App\Services\PromotionService;
 use App\Services\RecipeService;
 use App\Services\SaleService;
 use Illuminate\Http\Request;
@@ -24,6 +27,8 @@ class SaleController extends Controller
         protected SaleService $saleService,
         protected RecipeService $recipeService,
         protected PaymentService $payments,
+        protected PromotionService $promotions,
+        protected LoyaltyService $loyalty,
     ) {}
 
     public function index(Request $request)
@@ -90,6 +95,8 @@ class SaleController extends Controller
             'shift_id' => 'nullable|integer',
             'table_id' => 'nullable|integer',
             'tax_rate_id' => 'nullable|integer',
+            'promotion_code' => 'nullable|string|max:64',
+            'redeem_points' => 'nullable|numeric|min:0',
             'idempotency_key' => 'nullable|string|max:128',
             'notes' => 'nullable|string',
             'order_type' => 'nullable|in:dine_in,takeaway,delivery,pickup',
@@ -117,6 +124,11 @@ class SaleController extends Controller
         ]);
 
         $orderType = $data['order_type'] ?? 'takeaway';
+
+        $customerId = $data['customer_id'] ?? null;
+        if ($customerId && ! Customer::where('id', $customerId)->where('business_id', $businessId)->exists()) {
+            return $this->error('Not found', 404);
+        }
 
         if ($orderType === 'delivery' && (empty($data['fulfilment']['address']) || empty($data['fulfilment']['contact_phone']))) {
             return $this->error('Delivery orders need a contact phone and address', 422, [], 'ORDER_ERROR');
@@ -153,12 +165,17 @@ class SaleController extends Controller
         $outlet = Outlet::where('id', $outletId)->where('business_id', $businessId)->firstOrFail();
 
         try {
-            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $orderType, $tableId, $request) {
+            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $orderType, $tableId, $customerId, $request) {
                 $priced = $this->saleService->priceItems(
                     $data['items'],
                     $businessId,
                     $outletId,
                     $data['tax_rate_id'] ?? null,
+                    [
+                        'promotion_code' => $data['promotion_code'] ?? null,
+                        'customer_id' => $customerId,
+                        'redeem_points' => (string) ($data['redeem_points'] ?? '0'),
+                    ],
                 );
 
                 $sale = Sale::create([
@@ -166,7 +183,7 @@ class SaleController extends Controller
                     'outlet_id' => $outletId,
                     'device_id' => $data['device_id'] ?? null,
                     'cashier_id' => $request->user()->id,
-                    'customer_id' => $data['customer_id'] ?? null,
+                    'customer_id' => $customerId,
                     'table_id' => $tableId,
                     'shift_id' => $data['shift_id'] ?? null,
                     'receipt_number' => 'PENDING',
@@ -174,10 +191,6 @@ class SaleController extends Controller
                     'order_type' => $orderType,
                     'order_status' => 'completed',
                     'status' => 'completed',
-                    'subtotal' => $priced['subtotal'],
-                    'discount_amount' => $priced['discount_amount'],
-                    'tax_amount' => $priced['tax_amount'],
-                    'total' => $priced['total'],
                     'paid_amount' => 0,
                     'change_amount' => 0,
                     'notes' => $data['notes'] ?? null,
@@ -187,12 +200,19 @@ class SaleController extends Controller
                 ]);
 
                 $this->saleService->attachItems($sale, $priced['items']);
+                $this->saleService->applyPricing($sale, $priced);
 
                 $sale->receipt_number = $this->saleService->receiptNumber($sale, $outlet);
                 $sale->save();
 
                 // deduct product stock and recipe ingredients
                 $this->saleService->deductStock($sale, $outletId, $request->user()->id);
+
+                // The promotion usage and loyalty ledger are only written once
+                // the sale is final, never while a cart is still open.
+                $this->promotions->recordRedemption($sale);
+                $this->loyalty->fulfilRedemption($sale);
+                $this->loyalty->earn($sale);
 
                 // Payments are optional here; the POS can also post to
                 // /sales/{sale}/payments. Recording them in this transaction
@@ -265,6 +285,10 @@ class SaleController extends Controller
                 ->update(['status' => 'refunded']);
 
             $this->recipeService->reverseForSale($sale, $data['reason'], $request->user()->id);
+
+            // Give the promotion usage back and put loyalty points where they were.
+            $this->promotions->releaseRedemption($sale);
+            $this->loyalty->reverseForSale($sale, $data['reason']);
         });
 
         return $this->success($sale, 'Voided');

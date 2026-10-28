@@ -16,13 +16,22 @@ class Sale extends Model
 
     public const ACTIVE_ORDER_STATUSES = ['open', 'in_kitchen', 'ready', 'served'];
 
-    protected $fillable = ['business_id', 'outlet_id', 'device_id', 'cashier_id', 'customer_id', 'table_id', 'shift_id', 'receipt_number', 'order_number', 'order_type', 'order_status', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'total', 'paid_amount', 'change_amount', 'notes', 'fulfilment', 'idempotency_key', 'completed_at', 'fired_at', 'ready_at', 'served_at', 'voided_at', 'voided_by', 'void_reason'];
+    protected $fillable = [
+        'business_id', 'outlet_id', 'device_id', 'cashier_id', 'customer_id', 'table_id', 'shift_id',
+        'promotion_id', 'promotion_code', 'promotion_discount', 'loyalty_discount', 'loyalty_points_redeemed',
+        'loyalty_points_earned', 'receipt_number', 'order_number', 'order_type', 'order_status', 'status',
+        'subtotal', 'discount_amount', 'tax_amount', 'total', 'paid_amount', 'change_amount', 'notes',
+        'fulfilment', 'idempotency_key', 'completed_at', 'fired_at', 'ready_at', 'served_at', 'voided_at',
+        'voided_by', 'void_reason',
+    ];
 
     protected function casts(): array
     {
         return [
             'subtotal' => 'decimal:4', 'discount_amount' => 'decimal:4', 'tax_amount' => 'decimal:4',
             'total' => 'decimal:4', 'paid_amount' => 'decimal:4', 'change_amount' => 'decimal:4',
+            'promotion_discount' => 'decimal:4', 'loyalty_discount' => 'decimal:4',
+            'loyalty_points_redeemed' => 'decimal:4', 'loyalty_points_earned' => 'decimal:4',
             'fulfilment' => 'array',
             'completed_at' => 'datetime', 'fired_at' => 'datetime', 'ready_at' => 'datetime',
             'served_at' => 'datetime', 'voided_at' => 'datetime',
@@ -67,6 +76,21 @@ class Sale extends Model
     public function refunds()
     {
         return $this->hasMany(Refund::class);
+    }
+
+    public function promotion()
+    {
+        return $this->belongsTo(Promotion::class);
+    }
+
+    public function promotionRedemption()
+    {
+        return $this->hasOne(PromotionRedemption::class);
+    }
+
+    public function loyaltyTransactions()
+    {
+        return $this->hasMany(LoyaltyTransaction::class);
     }
 
     public function scopeActiveOrders($query)

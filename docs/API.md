@@ -15,7 +15,7 @@ Base URL: `/api/v1`
 Protected endpoints require `Authorization: Bearer <token>`. Tenant context resolved via `X-Business-Id` and optional `X-Outlet-Id` headers (or `business_id`/`outlet_id` body params). Platform admins may access any business.
 
 ## Modules
-Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
+Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers (loyalty), Loyalty programme and ledger, Promotions and redemptions, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
 
 ## Menu, modifiers, and availability
 All paths require tenant context. Permissions: `menu.view`, `menu.manage`, `menu.availability`, `menu.dayparts`.
@@ -111,6 +111,33 @@ Payment methods belong to one business and are provisioned with six defaults: `c
 - POST `/refunds/{refund}/approve` — completes the refund and rolls `payment.status` and `sale.status` to `partially_refunded` or `refunded`. POST `/refunds/{refund}/reject` closes it as `rejected`. Only pending refunds can change (`422 REFUND_ERROR`).
 
 Voiding a completed sale marks its completed payments `refunded` so the paid ledger matches the reversed sale.
+
+## Customers, loyalty and promotions
+Permissions: `customers.view`, `customers.manage`, `loyalty.view`, `loyalty.manage`, `promotions.view`, `promotions.manage`, `sales.create`.
+
+Customers carry `loyalty_number`, `loyalty_points`, `total_spent`, `visits_count`, `last_visit_at` and `loyalty_joined_at`.
+
+- GET `/customers?search=…&loyalty_only=1&sort=name|spend|recent` — paginated; `search` matches name, phone, email and loyalty number.
+- POST `/customers`, PUT/DELETE `/customers/{customer}` — name, phone, email, address, `loyalty_number`.
+- GET `/customers/{customer}` — the profile plus the last 10 finalised sales, the last 20 loyalty transactions and `promotions_used`.
+
+One loyalty programme per business. It is provisioned on first use with `points_per_amount = 0.0001` (1 point per 10.000 spent), `redeem_value = 100` (1 point = 100) and `min_redeem_points = 10`.
+
+- GET `/loyalty/program` — the programme settings (`loyalty.view`); defaults are created when missing.
+- PUT `/loyalty/program` — `{ is_active?, points_per_amount?, redeem_value?, min_redeem_points? }` (`loyalty.manage`).
+- GET `/loyalty/transactions?customer_id=…&sale_id=…&type=earn|redeem|adjust|reverse` — paginated ledger; `points` is the signed delta and `balance_after` the resulting balance.
+- POST `/customers/{customer}/loyalty/adjust` — `{ points, reason }` manual correction (`loyalty.manage`); negative points cannot take the balance below zero (`422 LOYALTY_ERROR`).
+
+Points are earned when a sale is completed and only for sales with a customer. The balance is never touched while an order is open: redemption is priced from the current balance and deducted in the checkout transaction. Voiding a completed sale reverses both the earned and the redeemed points and gives the visit back.
+
+Promotions support `percentage` and `fixed` types. A promotion with a `code` is applied when the cashier types it; a promotion without a code is applied automatically, and the highest-value qualifying automatic promotion wins. At most one promotion applies to a sale.
+
+- GET `/promotions?active_only=1&q=…` — ordered by active state then name.
+- POST `/promotions` — `{ name, code?, type?, value, min_spend?, max_discount?, usage_limit?, per_customer_limit?, starts_at?, ends_at?, is_active?, description? }`. Codes are upper-cased and unique per business; percentages cannot exceed 100. A `per_customer_limit` needs a customer on the sale.
+- PUT `/promotions/{promotion}`, DELETE `/promotions/{promotion}` — deletion is blocked once the promotion has been redeemed (`422 PROMOTION_IN_USE`); deactivate it instead.
+- POST `/promotions/preview` (`sales.create`) — `{ items[], promotion_code?, customer_id?, redeem_points?, tax_rate_id? }` prices the cart without writing anything and returns `subtotal`, `promotion_discount`, `loyalty_discount`, `tax_amount` and `total`.
+
+`POST /sales`, `POST /orders` and `POST /orders/{sale}/checkout` accept `promotion_code`, `redeem_points` and (checkout) `customer_id`. Order-level discounts are allocated across lines proportionally so per-line tax and totals still add up; `sale_items.line_discount_amount` keeps the cashier's own line discount while `discount_amount` includes the allocated share. Sales expose `promotion_id`, `promotion_code`, `promotion_discount`, `loyalty_discount`, `loyalty_points_redeemed` and `loyalty_points_earned`. Invalid, expired, exhausted or cross-tenant codes fail with `422 SALE_ERROR` / `422 ORDER_ERROR` and no sale is written.
 
 ## Response format
 Success: `{ "success": true, "message": "...", "data": {}, "meta": {} }`

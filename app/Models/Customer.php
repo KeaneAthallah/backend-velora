@@ -10,15 +10,31 @@ class Customer extends Model
 {
     use HasFactory, SoftDeletes;
 
-    protected $fillable = ['business_id', 'name', 'phone', 'email', 'address', 'loyalty_number', 'loyalty_points', 'metadata'];
+    protected $fillable = [
+        'business_id', 'name', 'phone', 'email', 'address', 'loyalty_number', 'loyalty_points',
+        'total_spent', 'visits_count', 'last_visit_at', 'loyalty_joined_at', 'metadata',
+    ];
 
     protected function casts(): array
     {
-        return ['loyalty_points' => 'decimal:4', 'metadata' => 'array'];
+        return [
+            'loyalty_points' => 'decimal:4', 'total_spent' => 'decimal:4', 'visits_count' => 'integer',
+            'last_visit_at' => 'datetime', 'loyalty_joined_at' => 'datetime', 'metadata' => 'array',
+        ];
     }
 
     public function business()
     {
         return $this->belongsTo(Business::class);
+    }
+
+    public function sales()
+    {
+        return $this->hasMany(Sale::class);
+    }
+
+    public function loyaltyTransactions()
+    {
+        return $this->hasMany(LoyaltyTransaction::class);
     }
 }
