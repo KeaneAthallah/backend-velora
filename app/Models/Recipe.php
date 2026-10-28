@@ -31,10 +31,8 @@ class Recipe extends Model
         return $this->hasMany(RecipeIngredient::class);
     }
 
-    public function products()
+    public function ingredientRelations()
     {
-        return $this->belongsToMany(Product::class, 'recipe_ingredients')
-            ->using(RecipeIngredient::class)
-            ->withPivot('quantity_per_unit', 'unit');
+        return $this->hasMany(IngredientRecipeRelation::class);
     }
 }
