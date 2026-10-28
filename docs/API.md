@@ -15,7 +15,7 @@ Base URL: `/api/v1`
 Protected endpoints require `Authorization: Bearer <token>`. Tenant context resolved via `X-Business-Id` and optional `X-Outlet-Id` headers (or `business_id`/`outlet_id` body params). Platform admins may access any business.
 
 ## Modules
-Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payments (create/refund), Refunds (approve/reject), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
+Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
 
 ## Menu, modifiers, and availability
 All paths require tenant context. Permissions: `menu.view`, `menu.manage`, `menu.availability`, `menu.dayparts`.
@@ -61,7 +61,7 @@ An order is a draft sale, not a second table: `sales.status = draft` until check
 - GET `/orders/{sale}` — one order with items, customer, outlet, table and payments.
 - PUT `/orders/{sale}` — edit an open order: `order_type`, `customer_id`, `table_id`, `notes`, `fulfilment`, and/or `items[]` (a full replacement, repriced). Returns `422 ORDER_ERROR` once the order is no longer open.
 - POST `/orders/{sale}/status` — `{ status: in_kitchen|ready|served }`. Forward-only; repeats of the current status are idempotent, backward moves return `422 ORDER_ERROR`. Sets `fired_at`, `ready_at`, `served_at`.
-- POST `/orders/{sale}/checkout` — finalises the order: deducts product stock and recipe ingredients, assigns the receipt number, and sets `status=completed`, `order_status=completed`.
+- POST `/orders/{sale}/checkout` — finalises the order: deducts product stock and recipe ingredients, assigns the receipt number, and sets `status=completed`, `order_status=completed`. Accepts an optional `payments[]` batch (see Payments) recorded in the same transaction.
 - POST `/orders/{sale}/cancel` — `{ reason }`; voids the draft without touching stock.
 
 Order numbers are per outlet + order type + business day: `{OUTLETCODE}-{DI|TA|DL|PU}-{YYYYMMDD}-{seq:03}`. Draft orders keep `receipt_number = OPEN-{order_number}` until checkout. Delivery orders must include `fulfilment.contact_phone` and `fulfilment.address`. Immediate sales (`POST /sales`) also accept `order_type` and `fulfilment` and return the same order fields with `order_status = completed`.
@@ -93,6 +93,24 @@ A station is a prep point (grill, bar, pastry) inside one outlet. Each station o
 - GET `/kitchen/tickets/{ticket}/print` — the ticket payload plus `text`, a 42-column plain-text ticket for a thermal printer or browser print. POST `/kitchen/tickets/{ticket}/printed` stamps `printed_at` and increments `print_count`.
 
 Tickets are created the first time an order is fired (`order_status = in_kitchen`) and are never duplicated. Ticket numbers are per outlet and business day: `{OUTLETCODE}-K-{YYYYMMDD}-{seq:03}`. When every ticket for an order is `ready`, the order follows to `ready`; when all are `served`, it follows to `served`. Moving the order from the order board cascades the same way, and cancelling the order voids its tickets.
+
+## Payment methods, split payments and refunds
+Permissions: `payments.view`, `payments.manage`, `sales.create`, `sales.refund`.
+
+Payment methods belong to one business and are provisioned with six defaults: `cash`, `qris`, `debit_card`, `credit_card`, `ewallet`, `transfer`.
+
+- GET `/payment-methods?active=1` — ordered by `sort_order`; omit `active` to include inactive rails (the settings screen does).
+- POST `/payment-methods` — `{ name, code?, type?, requires_reference?, is_active?, sort_order?, settings? }`. `type` is `cash | qris | debit_card | credit_card | ewallet | transfer | other`; `code` is slugged from the name when omitted and is unique per business (`422 VALIDATION_ERROR`).
+- PUT `/payment-methods/{paymentMethod}` — `name`, `type`, `requires_reference`, `is_active`, `sort_order`, `settings`. The code cannot change because recorded payments reference it.
+- DELETE `/payment-methods/{paymentMethod}` — blocked once any payment used the code (`422 PAYMENT_METHOD_IN_USE`); deactivate it instead.
+
+`POST /sales/{sale}/payments` (`sales.create`) records a batch: `{ payments: [{ method, amount, reference?, provider?, external_id? }], idempotency_key? }`. Split payments are supported. The batch must cover the remaining total (`422 PAYMENT_ERROR`); overpayment is only allowed from cash and is returned as `change_amount`, never more than the cash tendered. Unknown or inactive methods are rejected. The response is the sale with `paid_amount`, `change_amount` and `payments[]`. Replaying the same `idempotency_key` returns the rows already recorded. `POST /sales` and `POST /orders/{sale}/checkout` accept the same `payments[]` array and record it inside the sale or checkout transaction, so a payment failure rolls the whole sale back. The legacy `POST /payments` endpoint still accepts one payment for a `sale_id`.
+
+- POST `/payments/{payment}/refund` — `{ amount, reason? }` requests a refund against one payment (`sales.refund`). Pending refunds reserve their amount, so requests cannot exceed what is left.
+- GET `/refunds?status=…&sale_id=…&payment_id=…&from=…&to=…` — paginated refunds with the nested sale and payment (method and amount).
+- POST `/refunds/{refund}/approve` — completes the refund and rolls `payment.status` and `sale.status` to `partially_refunded` or `refunded`. POST `/refunds/{refund}/reject` closes it as `rejected`. Only pending refunds can change (`422 REFUND_ERROR`).
+
+Voiding a completed sale marks its completed payments `refunded` so the paid ledger matches the reversed sale.
 
 ## Response format
 Success: `{ "success": true, "message": "...", "data": {}, "meta": {} }`

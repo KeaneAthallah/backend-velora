@@ -4,8 +4,13 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Business;
+use App\Models\BusinessMembership;
+use App\Models\PaymentMethod;
+use App\Models\Permission;
+use App\Models\Role;
 use App\Services\AuthorizationService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 
 class BusinessController extends Controller
 {
@@ -18,6 +23,7 @@ class BusinessController extends Controller
             return $this->success(Business::paginate(20));
         }
         $ids = $user->businessMemberships()->where('status', 'active')->pluck('business_id');
+
         return $this->success(Business::whereIn('id', $ids)->paginate(20));
     }
 
@@ -32,22 +38,24 @@ class BusinessController extends Controller
             'settings' => 'nullable|array',
         ]);
         $business = Business::create(array_merge($data, [
-            'slug' => \Illuminate\Support\Str::slug($data['name']) . '-' . uniqid(),
+            'slug' => Str::slug($data['name']).'-'.uniqid(),
             'status' => 'active',
         ]));
         // assign creator as owner role (create role if none)
-        $role = \App\Models\Role::firstOrCreate(
+        $role = Role::firstOrCreate(
             ['business_id' => $business->id, 'slug' => 'owner'],
             ['name' => 'Owner', 'is_system' => true]
         );
-        $role->permissions()->sync(\App\Models\Permission::pluck('id'));
-        \App\Models\BusinessMembership::create([
+        $role->permissions()->sync(Permission::pluck('id'));
+        BusinessMembership::create([
             'user_id' => $request->user()->id,
             'business_id' => $business->id,
             'role_id' => $role->id,
             'status' => 'active',
             'joined_at' => now(),
         ]);
+        PaymentMethod::ensureDefaults($business->id);
+
         return $this->success($business, 'Business created', 201);
     }
 
@@ -55,12 +63,13 @@ class BusinessController extends Controller
     {
         $user = $request->user();
         if (! $user->is_platform_admin) {
-            $membership = \App\Models\BusinessMembership::where('user_id', $user->id)->where('business_id', $business->id)->where('status', 'active')->first();
+            $membership = BusinessMembership::where('user_id', $user->id)->where('business_id', $business->id)->where('status', 'active')->first();
             if (! $membership) {
                 return $this->error('Not found', 404);
             }
         }
         $this->authz->requirePermission($request->user(), 'businesses.view', $business->id);
+
         return $this->success($business);
     }
 
@@ -68,7 +77,7 @@ class BusinessController extends Controller
     {
         $user = $request->user();
         if (! $user->is_platform_admin) {
-            $membership = \App\Models\BusinessMembership::where('user_id', $user->id)->where('business_id', $business->id)->where('status', 'active')->first();
+            $membership = BusinessMembership::where('user_id', $user->id)->where('business_id', $business->id)->where('status', 'active')->first();
             if (! $membership) {
                 return $this->error('Not found', 404);
             }
@@ -84,6 +93,7 @@ class BusinessController extends Controller
             'settings' => 'nullable|array',
         ]);
         $business->update($data);
+
         return $this->success($business);
     }
 
@@ -91,13 +101,14 @@ class BusinessController extends Controller
     {
         $user = $request->user();
         if (! $user->is_platform_admin) {
-            $membership = \App\Models\BusinessMembership::where('user_id', $user->id)->where('business_id', $business->id)->where('status', 'active')->first();
+            $membership = BusinessMembership::where('user_id', $user->id)->where('business_id', $business->id)->where('status', 'active')->first();
             if (! $membership) {
                 return $this->error('Not found', 404);
             }
         }
         $this->authz->requirePermission($request->user(), 'businesses.manage', $business->id);
         $business->delete();
+
         return $this->success(null, 'Deleted');
     }
 }

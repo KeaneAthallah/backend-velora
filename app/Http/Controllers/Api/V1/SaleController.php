@@ -7,9 +7,11 @@ use App\Models\DiningTable;
 use App\Models\InventoryBalance;
 use App\Models\InventoryMovement;
 use App\Models\Outlet;
+use App\Models\Payment;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Services\AuthorizationService;
+use App\Services\PaymentService;
 use App\Services\RecipeService;
 use App\Services\SaleService;
 use Illuminate\Http\Request;
@@ -21,6 +23,7 @@ class SaleController extends Controller
         protected AuthorizationService $authz,
         protected SaleService $saleService,
         protected RecipeService $recipeService,
+        protected PaymentService $payments,
     ) {}
 
     public function index(Request $request)
@@ -105,6 +108,12 @@ class SaleController extends Controller
             'items.*.option_ids.*' => 'integer',
             'items.*.notes' => 'nullable|string|max:255',
             'items.*.unit_price_override' => 'nullable|numeric|min:0',
+            'payments' => 'nullable|array|max:10',
+            'payments.*.method' => 'required|string|max:64',
+            'payments.*.amount' => 'required|numeric|min:0.0001',
+            'payments.*.reference' => 'nullable|string|max:128',
+            'payments.*.provider' => 'nullable|string|max:64',
+            'payments.*.external_id' => 'nullable|string|max:128',
         ]);
 
         $orderType = $data['order_type'] ?? 'takeaway';
@@ -185,13 +194,24 @@ class SaleController extends Controller
                 // deduct product stock and recipe ingredients
                 $this->saleService->deductStock($sale, $outletId, $request->user()->id);
 
+                // Payments are optional here; the POS can also post to
+                // /sales/{sale}/payments. Recording them in this transaction
+                // keeps a paid sale from existing without its payment rows.
+                if (! empty($data['payments'])) {
+                    $this->payments->recordPayments(
+                        $sale,
+                        $data['payments'],
+                        $data['idempotency_key'] ?? null
+                    );
+                }
+
                 return $sale;
             });
         } catch (\RuntimeException $e) {
             return $this->error($e->getMessage(), 422, [], 'SALE_ERROR');
         }
 
-        return $this->success($sale->load('items', 'table'), 'Sale completed', 201);
+        return $this->success($sale->load('items', 'payments', 'table'), 'Sale completed', 201);
     }
 
     public function void(Request $request, Sale $sale)
@@ -237,6 +257,12 @@ class SaleController extends Controller
             $sale->voided_by = $request->user()->id;
             $sale->void_reason = $data['reason'];
             $sale->save();
+
+            // Voiding hands the money back, so completed payments leave the
+            // paid ledger rather than lingering as collected revenue.
+            Payment::where('sale_id', $sale->id)
+                ->where('status', 'completed')
+                ->update(['status' => 'refunded']);
 
             $this->recipeService->reverseForSale($sale, $data['reason'], $request->user()->id);
         });

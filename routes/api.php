@@ -101,6 +101,11 @@ Route::prefix('v1')->group(function () {
             Route::get('sales/{sale}/receipt', [\App\Http\Controllers\Api\V1\SaleController::class, 'receipt']);
 
             // payments
+            Route::get('payment-methods', [\App\Http\Controllers\Api\V1\PaymentMethodController::class, 'index']);
+            Route::post('payment-methods', [\App\Http\Controllers\Api\V1\PaymentMethodController::class, 'store']);
+            Route::put('payment-methods/{paymentMethod}', [\App\Http\Controllers\Api\V1\PaymentMethodController::class, 'update']);
+            Route::delete('payment-methods/{paymentMethod}', [\App\Http\Controllers\Api\V1\PaymentMethodController::class, 'destroy']);
+            Route::post('sales/{sale}/payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'storeForSale']);
             Route::post('payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'store']);
             Route::post('payments/{payment}/refund', [\App\Http\Controllers\Api\V1\PaymentController::class, 'refund']);
 

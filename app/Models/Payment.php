@@ -9,7 +9,7 @@ class Payment extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['business_id', 'sale_id', 'method', 'amount', 'status', 'reference', 'provider', 'external_id', 'provider_response', 'idempotency_key', 'paid_at'];
+    protected $fillable = ['business_id', 'sale_id', 'payment_method_id', 'method', 'amount', 'status', 'reference', 'provider', 'external_id', 'provider_response', 'idempotency_key', 'paid_at'];
 
     protected function casts(): array
     {
@@ -24,5 +24,15 @@ class Payment extends Model
     public function sale()
     {
         return $this->belongsTo(Sale::class);
+    }
+
+    public function paymentMethod()
+    {
+        return $this->belongsTo(PaymentMethod::class);
+    }
+
+    public function refunds()
+    {
+        return $this->hasMany(Refund::class);
     }
 }

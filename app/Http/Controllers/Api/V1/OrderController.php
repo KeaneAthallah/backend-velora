@@ -8,6 +8,7 @@ use App\Models\Outlet;
 use App\Models\Sale;
 use App\Services\AuthorizationService;
 use App\Services\KitchenService;
+use App\Services\PaymentService;
 use App\Services\SaleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -29,6 +30,7 @@ class OrderController extends Controller
         protected AuthorizationService $authz,
         protected SaleService $saleService,
         protected KitchenService $kitchen,
+        protected PaymentService $payments,
     ) {}
 
     public function index(Request $request)
@@ -327,8 +329,18 @@ class OrderController extends Controller
             return $this->error('Add at least one item before checkout', 422, [], 'ORDER_ERROR');
         }
 
+        $data = $request->validate([
+            'payments' => 'nullable|array|max:10',
+            'payments.*.method' => 'required|string|max:64',
+            'payments.*.amount' => 'required|numeric|min:0.0001',
+            'payments.*.reference' => 'nullable|string|max:128',
+            'payments.*.provider' => 'nullable|string|max:64',
+            'payments.*.external_id' => 'nullable|string|max:128',
+            'idempotency_key' => 'nullable|string|max:128',
+        ]);
+
         try {
-            DB::transaction(function () use ($sale, $request) {
+            DB::transaction(function () use ($sale, $data, $request) {
                 $this->saleService->deductStock($sale, $sale->outlet_id, $request->user()->id);
 
                 $outlet = Outlet::findOrFail($sale->outlet_id);
@@ -340,6 +352,14 @@ class OrderController extends Controller
                 $sale->save();
 
                 $this->kitchen->syncFromOrderStatus($sale, 'completed');
+
+                if (! empty($data['payments'])) {
+                    $this->payments->recordPayments(
+                        $sale,
+                        $data['payments'],
+                        $data['idempotency_key'] ?? null
+                    );
+                }
             });
         } catch (\RuntimeException $e) {
             return $this->error($e->getMessage(), 422, [], 'SALE_ERROR');

@@ -26,6 +26,7 @@ class PermissionSeeder extends Seeder
             'tables.view', 'tables.manage',
             'kitchen.view', 'kitchen.manage', 'kitchen.print',
             'sales.view', 'sales.create', 'sales.void', 'sales.refund',
+            'payments.view', 'payments.manage',
             'shifts.view', 'shifts.manage',
             'settings.manage',
             'reports.view',
