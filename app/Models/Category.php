@@ -36,4 +36,11 @@ class Category extends Model
     {
         return $this->hasMany(Product::class);
     }
+
+    public function modifierGroups()
+    {
+        return $this->morphToMany(ModifierGroup::class, 'assignable', 'modifier_group_assignments')
+            ->withPivot('sort_order')
+            ->withTimestamps();
+    }
 }

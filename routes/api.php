@@ -43,6 +43,26 @@ Route::prefix('v1')->group(function () {
             // devices
             Route::apiResource('devices', \App\Http\Controllers\Api\V1\DeviceController::class);
 
+            // menu engineering
+            Route::get('menu', [\App\Http\Controllers\Api\V1\MenuController::class, 'menu']);
+            Route::get('menu/availability', [\App\Http\Controllers\Api\V1\MenuController::class, 'availability']);
+            Route::put('menu/availability', [\App\Http\Controllers\Api\V1\MenuController::class, 'updateAvailability']);
+            Route::post('menu/items/{product}/86', [\App\Http\Controllers\Api\V1\MenuController::class, 'markUnavailable']);
+            Route::post('menu/items/{product}/restore', [\App\Http\Controllers\Api\V1\MenuController::class, 'restore']);
+            Route::get('dayparts', [\App\Http\Controllers\Api\V1\MenuController::class, 'dayparts']);
+            Route::post('dayparts', [\App\Http\Controllers\Api\V1\MenuController::class, 'storeDaypart']);
+            Route::put('dayparts/{daypart}', [\App\Http\Controllers\Api\V1\MenuController::class, 'updateDaypart']);
+            Route::delete('dayparts/{daypart}', [\App\Http\Controllers\Api\V1\MenuController::class, 'destroyDaypart']);
+            Route::put('products/{product}/dayparts', [\App\Http\Controllers\Api\V1\MenuController::class, 'productDayparts']);
+            Route::apiResource('modifier-groups', \App\Http\Controllers\Api\V1\ModifierGroupController::class)
+                ->parameters(['modifier-groups' => 'modifierGroup']);
+            Route::post('modifier-groups/{modifierGroup}/attach', [\App\Http\Controllers\Api\V1\ModifierGroupController::class, 'attach']);
+            Route::post('modifier-groups/{modifierGroup}/detach', [\App\Http\Controllers\Api\V1\ModifierGroupController::class, 'detach']);
+            Route::get('modifier-groups/{modifierGroup}/options', [\App\Http\Controllers\Api\V1\ModifierGroupController::class, 'options']);
+            Route::post('modifier-groups/{modifierGroup}/options', [\App\Http\Controllers\Api\V1\ModifierGroupController::class, 'storeOption']);
+            Route::put('modifier-options/{modifierOption}', [\App\Http\Controllers\Api\V1\ModifierGroupController::class, 'updateOption']);
+            Route::delete('modifier-options/{modifierOption}', [\App\Http\Controllers\Api\V1\ModifierGroupController::class, 'destroyOption']);
+
             // catalog
             Route::apiResource('categories', \App\Http\Controllers\Api\V1\CategoryController::class);
             Route::apiResource('products', \App\Http\Controllers\Api\V1\ProductController::class);

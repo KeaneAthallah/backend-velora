@@ -10,11 +10,11 @@ class Product extends Model
 {
     use HasFactory, SoftDeletes;
 
-    protected $fillable = ['business_id', 'category_id', 'name', 'sku', 'description', 'unit', 'cost_price', 'selling_price', 'track_inventory', 'is_active', 'attributes'];
+    protected $fillable = ['business_id', 'category_id', 'name', 'sku', 'description', 'unit', 'cost_price', 'selling_price', 'track_inventory', 'is_active', 'is_combo', 'attributes'];
 
     protected function casts(): array
     {
-        return ['cost_price' => 'decimal:4', 'selling_price' => 'decimal:4', 'track_inventory' => 'boolean', 'is_active' => 'boolean', 'attributes' => 'array'];
+        return ['cost_price' => 'decimal:4', 'selling_price' => 'decimal:4', 'track_inventory' => 'boolean', 'is_active' => 'boolean', 'is_combo' => 'boolean', 'attributes' => 'array'];
     }
 
     public function business()
@@ -40,5 +40,17 @@ class Product extends Model
     public function outletPrices()
     {
         return $this->hasMany(OutletProductPrice::class);
+    }
+
+    public function modifierGroups()
+    {
+        return $this->morphToMany(ModifierGroup::class, 'assignable', 'modifier_group_assignments')
+            ->withPivot('sort_order')
+            ->withTimestamps();
+    }
+
+    public function dayparts()
+    {
+        return $this->belongsToMany(Daypart::class, 'product_dayparts')->withTimestamps();
     }
 }

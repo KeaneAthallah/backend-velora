@@ -12,30 +12,46 @@ use App\Models\Sale;
 use App\Models\SaleItem;
 use App\Models\TaxRate;
 use App\Services\AuthorizationService;
+use App\Services\MenuService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class SaleController extends Controller
 {
-    public function __construct(protected AuthorizationService $authz) {}
+    public function __construct(
+        protected AuthorizationService $authz,
+        protected MenuService $menuService,
+    ) {}
 
     public function index(Request $request)
     {
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'sales.view', $businessId);
         $q = Sale::where('business_id', $businessId)->with('items', 'payments');
-        if ($request->filled('outlet_id')) $q->where('outlet_id', $request->input('outlet_id'));
-        if ($request->filled('status')) $q->where('status', $request->input('status'));
-        if ($request->filled('from')) $q->where('created_at', '>=', $request->input('from'));
-        if ($request->filled('to')) $q->where('created_at', '<=', $request->input('to'));
+        if ($request->filled('outlet_id')) {
+            $q->where('outlet_id', $request->input('outlet_id'));
+        }
+        if ($request->filled('status')) {
+            $q->where('status', $request->input('status'));
+        }
+        if ($request->filled('from')) {
+            $q->where('created_at', '>=', $request->input('from'));
+        }
+        if ($request->filled('to')) {
+            $q->where('created_at', '<=', $request->input('to'));
+        }
+
         return $this->success($q->orderByDesc('id')->paginate(50));
     }
 
     public function show(Request $request, Sale $sale)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($sale->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($sale->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'sales.view', $businessId);
+
         return $this->success($sale->load('items', 'payments', 'refunds'));
     }
 
@@ -44,7 +60,9 @@ class SaleController extends Controller
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'sales.create', $businessId);
         $outletId = $request->attributes->get('outlet_id') ?? $request->input('outlet_id');
-        if (! $outletId) return $this->error('Outlet required', 422);
+        if (! $outletId) {
+            return $this->error('Outlet required', 422);
+        }
 
         $data = $request->validate([
             'customer_id' => 'nullable|integer|exists:customers,id',
@@ -58,6 +76,8 @@ class SaleController extends Controller
             'items.*.product_variant_id' => 'nullable|integer',
             'items.*.quantity' => 'required|numeric|min:0.0001',
             'items.*.discount_amount' => 'nullable|numeric|min:0',
+            'items.*.option_ids' => 'nullable|array',
+            'items.*.option_ids.*' => 'integer',
             'items.*.unit_price_override' => 'nullable|numeric|min:0',
         ]);
 
@@ -80,7 +100,7 @@ class SaleController extends Controller
         $taxType = $taxRate ? $taxRate->type : 'exclusive';
 
         try {
-            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $taxRate, $taxRateValue, $taxType, $request) {
+            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $taxRateValue, $taxType, $request) {
                 // resolve prices and validate
                 $subtotal = '0';
                 $totalDiscount = '0';
@@ -89,29 +109,32 @@ class SaleController extends Controller
                 foreach ($data['items'] as $it) {
                     $product = Product::where('id', $it['product_id'])->where('business_id', $businessId)->firstOrFail();
                     if (! $product->is_active) {
-                        throw new \RuntimeException('Product inactive: ' . $product->id);
+                        throw new \RuntimeException('Product inactive: '.$product->id);
                     }
                     $variant = null;
                     if (! empty($it['product_variant_id'])) {
                         $variant = ProductVariant::where('id', $it['product_variant_id'])->where('product_id', $product->id)->firstOrFail();
                     }
-                    // price resolution
-                    $price = null;
-                    $opp = \App\Models\OutletProductPrice::where('outlet_id', $outletId)
-                        ->where('product_id', $product->id)
-                        ->where('product_variant_id', $it['product_variant_id'] ?? null)
-                        ->first();
-                    if ($opp) {
-                        $price = (string) $opp->selling_price;
-                    } elseif ($variant && $variant->selling_price !== null) {
-                        $price = (string) $variant->selling_price;
-                    } else {
-                        $price = (string) $product->selling_price;
+
+                    $availability = $this->menuService->productAvailability($product, $outletId, $variant);
+                    if (! $availability['available']) {
+                        throw new \RuntimeException("Unavailable: {$product->name} ({$availability['reason']})");
                     }
-                    if (isset($it['unit_price_override'])) {
-                        // only allow override if permission? For safety, reject override unless manager
-                        // We'll allow but could restrict; keep server authoritative by ignoring override
-                    }
+
+                    // Server-authoritative pricing: base price from outlet override / variant / product,
+                    // plus the sum of selected modifier price deltas.
+                    $basePrice = $this->menuService->basePrice($product, $variant, $outletId);
+                    $optionIds = $it['option_ids'] ?? [];
+                    $selection = $this->menuService->resolveItem(
+                        $product,
+                        $variant,
+                        $optionIds,
+                        $businessId,
+                        $outletId,
+                    );
+                    $price = bcadd($basePrice, $selection['delta'], 4);
+                    $modifierSnapshot = $selection['modifiers'];
+
                     $qty = (string) $it['quantity'];
                     $lineSubtotal = bcmul($price, $qty, 4);
                     $lineDiscount = (string) ($it['discount_amount'] ?? 0);
@@ -137,9 +160,11 @@ class SaleController extends Controller
                         'variant' => $variant,
                         'product_id' => $product->id,
                         'product_variant_id' => $it['product_variant_id'] ?? null,
-                        'product_name' => $product->name . ($variant ? ' - ' . $variant->name : ''),
+                        'product_name' => $product->name.($variant ? ' - '.$variant->name : ''),
                         'sku' => $variant ? $variant->sku : $product->sku,
+                        'base_unit_price' => $basePrice,
                         'unit_price' => $price,
+                        'modifiers' => $modifierSnapshot,
                         'cost_price' => $variant && $variant->cost_price !== null ? (string) $variant->cost_price : (string) $product->cost_price,
                         'quantity' => $qty,
                         'discount_amount' => $lineDiscount,
@@ -155,7 +180,7 @@ class SaleController extends Controller
                             ['business_id' => $businessId, 'quantity' => 0, 'reserved_quantity' => 0]
                         );
                         if (bccomp((string) $bal->quantity, $qty, 4) < 0) {
-                            throw new \RuntimeException('Insufficient stock for product ' . $product->id);
+                            throw new \RuntimeException('Insufficient stock for product '.$product->id);
                         }
                         $bal->quantity = bcsub((string) $bal->quantity, $qty, 4);
                         $bal->save();
@@ -199,6 +224,7 @@ class SaleController extends Controller
                         'product_variant_id' => $ri['product_variant_id'],
                         'product_name' => $ri['product_name'],
                         'sku' => $ri['sku'],
+                        'base_unit_price' => $ri['base_unit_price'],
                         'unit_price' => $ri['unit_price'],
                         'cost_price' => $ri['cost_price'],
                         'quantity' => $ri['quantity'],
@@ -206,6 +232,7 @@ class SaleController extends Controller
                         'tax_rate' => $ri['tax_rate'],
                         'tax_amount' => $ri['tax_amount'],
                         'line_total' => $ri['line_total'],
+                        'modifiers' => $ri['modifiers'],
                     ]);
 
                     $product = $ri['product'];
@@ -220,7 +247,7 @@ class SaleController extends Controller
                             'balance_after' => 0, // placeholder
                             'reference_type' => 'sale',
                             'reference_id' => $sale->id,
-                            'reason' => 'Sale ' . $sale->id,
+                            'reason' => 'Sale '.$sale->id,
                             'actor_id' => $request->user()->id,
                         ]);
                         // fix balance_after
@@ -234,7 +261,7 @@ class SaleController extends Controller
                 }
 
                 // receipt number
-                $receiptNumber = $outlet->code . '-' . now()->format('Ymd') . '-' . str_pad((string) $sale->id, 6, '0', STR_PAD_LEFT);
+                $receiptNumber = $outlet->code.'-'.now()->format('Ymd').'-'.str_pad((string) $sale->id, 6, '0', STR_PAD_LEFT);
                 $sale->receipt_number = $receiptNumber;
                 $sale->save();
 
@@ -250,9 +277,13 @@ class SaleController extends Controller
     public function void(Request $request, Sale $sale)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($sale->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($sale->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'sales.void', $businessId);
-        if ($sale->status !== 'completed') return $this->error('Only completed sales can be voided', 422);
+        if ($sale->status !== 'completed') {
+            return $this->error('Only completed sales can be voided', 422);
+        }
         $data = $request->validate(['reason' => 'required|string']);
         DB::transaction(function () use ($sale, $data, $request, $businessId) {
             // restore inventory
@@ -286,14 +317,18 @@ class SaleController extends Controller
             $sale->void_reason = $data['reason'];
             $sale->save();
         });
+
         return $this->success($sale, 'Voided');
     }
 
     public function receipt(Request $request, Sale $sale)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($sale->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($sale->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'sales.view', $businessId);
+
         return $this->success($sale->load('items', 'payments', 'customer', 'outlet', 'cashier'));
     }
 }

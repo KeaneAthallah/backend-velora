@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\Permission;
+use App\Models\Role;
 use Illuminate\Database\Seeder;
 
 class PermissionSeeder extends Seeder
@@ -19,6 +20,7 @@ class PermissionSeeder extends Seeder
             'customers.view', 'customers.manage',
             'suppliers.view', 'suppliers.manage',
             'purchasing.view', 'purchasing.manage',
+            'menu.view', 'menu.manage', 'menu.availability', 'menu.dayparts',
             'sales.view', 'sales.create', 'sales.void', 'sales.refund',
             'shifts.view', 'shifts.manage',
             'settings.manage',
@@ -28,5 +30,10 @@ class PermissionSeeder extends Seeder
         foreach ($permissions as $p) {
             Permission::firstOrCreate(['name' => $p], ['description' => $p]);
         }
+
+        $ids = Permission::whereIn('name', $permissions)->pluck('id');
+        Role::where('slug', 'owner')->get()->each(function ($role) use ($ids) {
+            $role->permissions()->syncWithoutDetaching($ids);
+        });
     }
 }
