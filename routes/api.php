@@ -196,6 +196,7 @@ Route::prefix('v1')->group(function () {
             Route::get('audit-logs', [\App\Http\Controllers\Api\V1\AuditLogController::class, 'index']);
 
             // sync
+            Route::get('sync/bootstrap', [\App\Http\Controllers\Api\V1\SyncController::class, 'bootstrap']);
             Route::get('sync/cursor', [\App\Http\Controllers\Api\V1\SyncController::class, 'cursor']);
             Route::post('sync/push', [\App\Http\Controllers\Api\V1\SyncController::class, 'push']);
             Route::get('sync/pull', [\App\Http\Controllers\Api\V1\SyncController::class, 'pull']);

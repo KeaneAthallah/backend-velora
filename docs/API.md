@@ -15,7 +15,7 @@ Base URL: `/api/v1`
 Protected endpoints require `Authorization: Bearer <token>`. Tenant context resolved via `X-Business-Id` and optional `X-Outlet-Id` headers (or `business_id`/`outlet_id` body params). Platform admins may access any business.
 
 ## Modules
-Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers (loyalty), Loyalty programme and ledger, Promotions and redemptions, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject), Sales Channels (online ordering, delivery partners, inbound webhook orders), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
+Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers (loyalty), Loyalty programme and ledger, Promotions and redemptions, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject), Sales Channels (online ordering, delivery partners, inbound webhook orders), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (offline bootstrap, cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
 
 ## Menu, modifiers, and availability
 All paths require tenant context. Permissions: `menu.view`, `menu.manage`, `menu.availability`, `menu.dayparts`.
@@ -165,6 +165,13 @@ Payload: `{ event?: order.created|order.cancelled, external_order_id, outlet_id?
 Prices are never taken from the payload: items resolve through the channel mapping and are priced by the server menu. Unmapped items or options fail with `422 CHANNEL_ERROR`. Guests are matched by phone and created when new. `external_order_id` is the idempotency key — replaying a push returns the existing order with `200` instead of `201`. An `order.cancelled` event voids the matching open order.
 
 Inbound orders start as `channel_status = received` with `order_status = open`. `auto_accept` channels are accepted and fired immediately. Channel orders carry `channel_order_ref`, `channel_commission_percent` and `channel_commission` (snapshot of the percentage at order time). Accept, ready, dispatched, completed and cancelled transitions queue matching `order.*` events, each only once. At checkout an order whose channel has a `payment_method_code` is settled automatically with that rail, so the cashier never charges a prepaid marketplace guest twice. `POST /orders` also accepts `sales_channel_id` and `channel_order_ref` to tag an order taken at the till (a phone or WhatsApp order) to a channel.
+
+## Offline-first register
+Permission: `sales.create`.
+
+- GET `/sync/bootstrap?outlet_id=…&customers_limit=…` — one snapshot for a register that has to keep selling when the network drops: `business`, `outlet`, `outlets`, the resolved `menu` (same shape as `GET /menu`, including modifier groups and availability), active `payment_methods`, active `tax_rates`, the last `customers_limit` (default 500, max 1000) customers by `updated_at`, and `server_time`. The outlet comes from `X-Outlet-Id`, then `outlet_id`, then the business's first outlet; another tenant's outlet returns `404`.
+
+The snapshot deliberately carries the register's catalogue for anyone who can sell, so a cashier without `menu.view` can still take orders; the menu back office stays gated. Queued sales are replayed through the normal `POST /sales` call, whose `idempotency_key` makes a retry return the existing sale instead of charging twice — no separate sync push endpoint is needed.
 
 ## Response format
 Success: `{ "success": true, "message": "...", "data": {}, "meta": {} }`
