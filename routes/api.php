@@ -77,6 +77,18 @@ Route::prefix('v1')->group(function () {
             Route::apiResource('stock-transfers', \App\Http\Controllers\Api\V1\StockTransferController::class);
             Route::post('stock-transfers/{stockTransfer}/complete', [\App\Http\Controllers\Api\V1\StockTransferController::class, 'complete']);
 
+            // ingredients & recipes (BOM)
+            Route::get('ingredients', [\App\Http\Controllers\Api\V1\IngredientController::class, 'index']);
+            Route::post('ingredients', [\App\Http\Controllers\Api\V1\IngredientController::class, 'store']);
+            Route::get('ingredients/balances', [\App\Http\Controllers\Api\V1\IngredientController::class, 'balances']);
+            Route::post('ingredients/adjust', [\App\Http\Controllers\Api\V1\IngredientController::class, 'adjust']);
+            Route::put('ingredients/{ingredient}', [\App\Http\Controllers\Api\V1\IngredientController::class, 'update']);
+            Route::delete('ingredients/{ingredient}', [\App\Http\Controllers\Api\V1\IngredientController::class, 'destroy']);
+            Route::get('ingredient-movements', [\App\Http\Controllers\Api\V1\IngredientController::class, 'movements']);
+            Route::get('recipes', [\App\Http\Controllers\Api\V1\RecipeController::class, 'index']);
+            Route::get('products/{product}/recipe', [\App\Http\Controllers\Api\V1\RecipeController::class, 'show']);
+            Route::put('products/{product}/recipe', [\App\Http\Controllers\Api\V1\RecipeController::class, 'sync']);
+
             // taxes/discounts
             Route::apiResource('tax-rates', \App\Http\Controllers\Api\V1\TaxRateController::class);
             Route::apiResource('discounts', \App\Http\Controllers\Api\V1\DiscountController::class);

@@ -53,4 +53,9 @@ class Product extends Model
     {
         return $this->belongsToMany(Daypart::class, 'product_dayparts')->withTimestamps();
     }
+
+    public function recipeItems()
+    {
+        return $this->hasMany(RecipeItem::class);
+    }
 }

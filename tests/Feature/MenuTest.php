@@ -228,6 +228,7 @@ test('menu data is isolated between businesses', function () {
     $otherAuth = ['Authorization' => "Bearer $otherToken"];
     $otherBiz = $this->withHeaders($otherAuth)->postJson('/api/v1/businesses', ['name' => 'Other Biz'])->json('data');
     $otherHeaders = $otherAuth + ['X-Business-Id' => $otherBiz['id']];
+    $this->flushHeaders();
 
     $this->withHeaders($otherHeaders)->getJson('/api/v1/menu?outlet_id='.$ctx['outlet']['id'])->assertStatus(404);
     $this->withHeaders($otherHeaders)->putJson("/api/v1/modifier-groups/{$group['id']}", ['name' => 'Hacked'])->assertStatus(404);
@@ -251,6 +252,7 @@ test('menu management requires permissions', function () {
 
     $headers = ['Authorization' => "Bearer $cashierToken", 'X-Business-Id' => $ctx['biz']['id']];
     $this->app['auth']->forgetGuards();
+    $this->flushHeaders();
 
     $this->withHeaders($headers)->postJson('/api/v1/modifier-groups', ['name' => 'Nope'])->assertStatus(403);
     $this->withHeaders($headers)->getJson('/api/v1/menu?outlet_id='.$ctx['outlet']['id'])->assertStatus(403);

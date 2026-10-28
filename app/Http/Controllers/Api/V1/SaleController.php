@@ -13,6 +13,7 @@ use App\Models\SaleItem;
 use App\Models\TaxRate;
 use App\Services\AuthorizationService;
 use App\Services\MenuService;
+use App\Services\RecipeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -21,6 +22,7 @@ class SaleController extends Controller
     public function __construct(
         protected AuthorizationService $authz,
         protected MenuService $menuService,
+        protected RecipeService $recipeService,
     ) {}
 
     public function index(Request $request)
@@ -265,6 +267,9 @@ class SaleController extends Controller
                 $sale->receipt_number = $receiptNumber;
                 $sale->save();
 
+                // deduct ingredient stock from product recipes
+                $this->recipeService->consumeForSale($sale, $outletId, $request->user()->id);
+
                 return $sale;
             });
         } catch (\RuntimeException $e) {
@@ -316,6 +321,8 @@ class SaleController extends Controller
             $sale->voided_by = $request->user()->id;
             $sale->void_reason = $data['reason'];
             $sale->save();
+
+            $this->recipeService->reverseForSale($sale, $data['reason'], $request->user()->id);
         });
 
         return $this->success($sale, 'Voided');
