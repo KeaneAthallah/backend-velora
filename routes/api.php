@@ -9,6 +9,9 @@ Route::prefix('v1')->group(function () {
     Route::post('auth/forgot-password', [\App\Http\Controllers\Api\V1\AuthController::class, 'forgotPassword']);
     Route::post('auth/reset-password', [\App\Http\Controllers\Api\V1\AuthController::class, 'resetPassword']);
 
+    // public channel partner ingress (signed with the channel secret)
+    Route::post('channel-webhooks/{token}', [\App\Http\Controllers\Api\V1\ChannelWebhookController::class, 'receive']);
+
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('me', [\App\Http\Controllers\Api\V1\MeController::class, 'show']);
         Route::post('auth/logout', [\App\Http\Controllers\Api\V1\AuthController::class, 'logout']);
@@ -80,6 +83,22 @@ Route::prefix('v1')->group(function () {
             Route::post('promotions/preview', [\App\Http\Controllers\Api\V1\PromotionController::class, 'preview']);
             Route::put('promotions/{promotion}', [\App\Http\Controllers\Api\V1\PromotionController::class, 'update']);
             Route::delete('promotions/{promotion}', [\App\Http\Controllers\Api\V1\PromotionController::class, 'destroy']);
+
+            // online & delivery channels
+            Route::get('channels', [\App\Http\Controllers\Api\V1\ChannelController::class, 'index']);
+            Route::get('channels/summary', [\App\Http\Controllers\Api\V1\ChannelController::class, 'summary']);
+            Route::post('channels', [\App\Http\Controllers\Api\V1\ChannelController::class, 'store']);
+            Route::put('channels/{channel}', [\App\Http\Controllers\Api\V1\ChannelController::class, 'update']);
+            Route::delete('channels/{channel}', [\App\Http\Controllers\Api\V1\ChannelController::class, 'destroy']);
+            Route::post('channels/{channel}/rotate-secret', [\App\Http\Controllers\Api\V1\ChannelController::class, 'rotateSecret']);
+            Route::get('channels/{channel}/mappings', [\App\Http\Controllers\Api\V1\ChannelController::class, 'mappings']);
+            Route::put('channels/{channel}/mappings', [\App\Http\Controllers\Api\V1\ChannelController::class, 'syncMappings']);
+            Route::get('channels/{channel}/orders', [\App\Http\Controllers\Api\V1\ChannelController::class, 'orders']);
+            Route::post('channels/{channel}/orders/{sale}/accept', [\App\Http\Controllers\Api\V1\ChannelController::class, 'acceptOrder']);
+            Route::post('channels/{channel}/orders/{sale}/reject', [\App\Http\Controllers\Api\V1\ChannelController::class, 'rejectOrder']);
+            Route::get('channels/{channel}/events', [\App\Http\Controllers\Api\V1\ChannelController::class, 'events']);
+            Route::post('channels/{channel}/events/{event}/ack', [\App\Http\Controllers\Api\V1\ChannelController::class, 'ackEvent']);
+            Route::post('channels/{channel}/menu/push', [\App\Http\Controllers\Api\V1\ChannelController::class, 'pushMenu']);
 
             // inventory
             Route::get('inventory/balances', [\App\Http\Controllers\Api\V1\InventoryController::class, 'balances']);

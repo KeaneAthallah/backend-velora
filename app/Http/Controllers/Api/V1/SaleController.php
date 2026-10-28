@@ -12,6 +12,7 @@ use App\Models\Payment;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Services\AuthorizationService;
+use App\Services\ChannelService;
 use App\Services\LoyaltyService;
 use App\Services\PaymentService;
 use App\Services\PromotionService;
@@ -29,13 +30,14 @@ class SaleController extends Controller
         protected PaymentService $payments,
         protected PromotionService $promotions,
         protected LoyaltyService $loyalty,
+        protected ChannelService $channels,
     ) {}
 
     public function index(Request $request)
     {
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'sales.view', $businessId);
-        $q = Sale::where('business_id', $businessId)->with('items', 'payments', 'table');
+        $q = Sale::where('business_id', $businessId)->with('items', 'payments', 'table', 'salesChannel');
         // Open tabs live on the order board; the receipt ledger only shows
         // finalised or voided sales unless a status is requested explicitly.
         if (! $request->filled('status') && ! $request->filled('order_status')) {
@@ -77,7 +79,7 @@ class SaleController extends Controller
         }
         $this->authz->requirePermission($request->user(), 'sales.view', $businessId);
 
-        return $this->success($sale->load('items', 'payments', 'refunds', 'customer', 'table'));
+        return $this->success($sale->load('items', 'payments', 'refunds', 'customer', 'table', 'salesChannel'));
     }
 
     public function store(Request $request)
@@ -289,6 +291,7 @@ class SaleController extends Controller
             // Give the promotion usage back and put loyalty points where they were.
             $this->promotions->releaseRedemption($sale);
             $this->loyalty->reverseForSale($sale, $data['reason']);
+            $this->channels->syncOrderStatus($sale, 'cancelled');
         });
 
         return $this->success($sale, 'Voided');

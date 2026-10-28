@@ -8,7 +8,9 @@ use App\Models\DiningTable;
 use App\Models\Outlet;
 use App\Models\Sale;
 use App\Models\SaleItem;
+use App\Models\SalesChannel;
 use App\Services\AuthorizationService;
+use App\Services\ChannelService;
 use App\Services\KitchenService;
 use App\Services\LoyaltyService;
 use App\Services\PaymentService;
@@ -37,6 +39,7 @@ class OrderController extends Controller
         protected PaymentService $payments,
         protected PromotionService $promotions,
         protected LoyaltyService $loyalty,
+        protected ChannelService $channels,
     ) {}
 
     public function index(Request $request)
@@ -51,7 +54,7 @@ class OrderController extends Controller
 
         $query = Sale::where('business_id', $businessId)
             ->whereNotNull('order_number')
-            ->with('items', 'customer', 'outlet', 'table');
+            ->with('items', 'customer', 'outlet', 'table', 'salesChannel');
 
         if ($outletId) {
             $query->where('outlet_id', $outletId);
@@ -93,7 +96,7 @@ class OrderController extends Controller
         }
         $this->authz->requirePermission($request->user(), 'orders.view', $businessId);
 
-        return $this->success($sale->load('items', 'customer', 'outlet', 'payments', 'table'));
+        return $this->success($sale->load('items', 'customer', 'outlet', 'payments', 'table', 'salesChannel'));
     }
 
     public function store(Request $request)
@@ -115,6 +118,17 @@ class OrderController extends Controller
 
         if (! empty($data['customer_id']) && ! $this->customerBelongsTo($businessId, (int) $data['customer_id'])) {
             return $this->error('Not found', 404);
+        }
+
+        $channel = null;
+        if (! empty($data['sales_channel_id'])) {
+            $channel = SalesChannel::where('business_id', $businessId)->find((int) $data['sales_channel_id']);
+            if (! $channel) {
+                return $this->error('Not found', 404);
+            }
+            if (! $channel->is_active) {
+                return $this->error('This sales channel is inactive', 422, [], 'CHANNEL_ERROR');
+            }
         }
 
         if (! empty($data['idempotency_key'])) {
@@ -146,7 +160,7 @@ class OrderController extends Controller
         }
 
         try {
-            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $orderType, $tableId, $request) {
+            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $orderType, $tableId, $request, $channel) {
                 $priced = $this->saleService->priceItems(
                     $data['items'],
                     $businessId,
@@ -172,6 +186,10 @@ class OrderController extends Controller
                     'order_type' => $orderType,
                     'order_status' => 'open',
                     'status' => 'draft',
+                    'sales_channel_id' => $channel?->id,
+                    'channel_order_ref' => $data['channel_order_ref'] ?? null,
+                    'channel_status' => $channel ? 'accepted' : null,
+                    'channel_commission_percent' => $channel?->commission_percent ?? 0,
                     'paid_amount' => 0,
                     'change_amount' => 0,
                     'notes' => $data['notes'] ?? null,
@@ -182,13 +200,17 @@ class OrderController extends Controller
                 $this->saleService->attachItems($sale, $priced['items']);
                 $this->saleService->applyPricing($sale, $priced);
 
+                if ($channel) {
+                    $this->channels->applyCommission($sale);
+                }
+
                 return $sale;
             });
         } catch (\RuntimeException $e) {
             return $this->error($e->getMessage(), 422, [], 'ORDER_ERROR');
         }
 
-        return $this->success($sale->load('items', 'customer', 'table'), 'Order opened', 201);
+        return $this->success($sale->load('items', 'customer', 'table', 'salesChannel'), 'Order opened', 201);
     }
 
     public function update(Request $request, Sale $sale)
@@ -346,7 +368,10 @@ class OrderController extends Controller
             $this->kitchen->syncFromOrderStatus($sale, $next);
         }
 
-        return $this->success($sale->load('items', 'customer', 'table'), 'Order updated');
+        // Channel partners need ready and dispatched updates pushed back out.
+        $this->channels->syncOrderStatus($sale, $next);
+
+        return $this->success($sale->load('items', 'customer', 'table', 'salesChannel'), 'Order updated');
     }
 
     public function checkout(Request $request, Sale $sale)
@@ -436,13 +461,18 @@ class OrderController extends Controller
                         $data['payments'],
                         $data['idempotency_key'] ?? null
                     );
+                } elseif ($sale->sales_channel_id) {
+                    // Marketplace orders are settled by the channel itself.
+                    $this->channels->settlePayment($sale, $this->payments);
                 }
+
+                $this->channels->syncOrderStatus($sale, 'completed');
             });
         } catch (\RuntimeException $e) {
             return $this->error($e->getMessage(), 422, [], 'SALE_ERROR');
         }
 
-        return $this->success($sale->fresh()->load('items', 'payments', 'customer', 'table'), 'Order checked out');
+        return $this->success($sale->fresh()->load('items', 'payments', 'customer', 'table', 'salesChannel'), 'Order checked out');
     }
 
     public function cancel(Request $request, Sale $sale)
@@ -467,8 +497,9 @@ class OrderController extends Controller
         $sale->save();
 
         $this->kitchen->voidForSale($sale);
+        $this->channels->syncOrderStatus($sale, 'cancelled');
 
-        return $this->success($sale->load('items', 'customer', 'table'), 'Order cancelled');
+        return $this->success($sale->load('items', 'customer', 'table', 'salesChannel'), 'Order cancelled');
     }
 
     /**
@@ -483,6 +514,8 @@ class OrderController extends Controller
             'tax_rate_id' => 'nullable|integer',
             'notes' => 'nullable|string',
             'idempotency_key' => 'nullable|string|max:128',
+            'sales_channel_id' => 'nullable|integer',
+            'channel_order_ref' => 'nullable|string|max:128',
             'fulfilment' => 'nullable|array',
             'fulfilment.contact_name' => 'nullable|string|max:255',
             'fulfilment.contact_phone' => 'nullable|string|max:32',

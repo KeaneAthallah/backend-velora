@@ -15,7 +15,7 @@ Base URL: `/api/v1`
 Protected endpoints require `Authorization: Bearer <token>`. Tenant context resolved via `X-Business-Id` and optional `X-Outlet-Id` headers (or `business_id`/`outlet_id` body params). Platform admins may access any business.
 
 ## Modules
-Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers (loyalty), Loyalty programme and ledger, Promotions and redemptions, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
+Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers (loyalty), Loyalty programme and ledger, Promotions and redemptions, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject), Sales Channels (online ordering, delivery partners, inbound webhook orders), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
 
 ## Menu, modifiers, and availability
 All paths require tenant context. Permissions: `menu.view`, `menu.manage`, `menu.availability`, `menu.dayparts`.
@@ -138,6 +138,33 @@ Promotions support `percentage` and `fixed` types. A promotion with a `code` is 
 - POST `/promotions/preview` (`sales.create`) — `{ items[], promotion_code?, customer_id?, redeem_points?, tax_rate_id? }` prices the cart without writing anything and returns `subtotal`, `promotion_discount`, `loyalty_discount`, `tax_amount` and `total`.
 
 `POST /sales`, `POST /orders` and `POST /orders/{sale}/checkout` accept `promotion_code`, `redeem_points` and (checkout) `customer_id`. Order-level discounts are allocated across lines proportionally so per-line tax and totals still add up; `sale_items.line_discount_amount` keeps the cashier's own line discount while `discount_amount` includes the allocated share. Sales expose `promotion_id`, `promotion_code`, `promotion_discount`, `loyalty_discount`, `loyalty_points_redeemed` and `loyalty_points_earned`. Invalid, expired, exhausted or cross-tenant codes fail with `422 SALE_ERROR` / `422 ORDER_ERROR` and no sale is written.
+
+## Online and delivery channels
+Permissions: `channels.view`, `channels.manage`, plus `orders.manage` / `orders.cancel` to accept or reject an incoming order.
+
+A channel is one way guests order: the shop's own web store, WhatsApp, the phone, or a marketplace such as GoFood or GrabFood. Each channel keeps its own commission, its own item ids, and its own connector credential.
+
+- GET `/channels?outlet_id=…&kind=…` — every channel with `mappings_count`, `sales_count`, `webhook_url` and `has_credentials`. Secrets are never returned.
+- POST `/channels` — `{ name, code?, kind?, outlet_id?, commission_percent?, payment_method_code?, auto_accept?, prep_buffer_minutes?, is_active?, settings? }`. `code` defaults to a slug of the name and is unique per business. The response includes the one-time `secret` and the `webhook_url`; `payment_method_code` must be a payment method the business already has.
+- PUT `/channels/{channel}`, DELETE `/channels/{channel}` — a channel with orders cannot be deleted (`422 CHANNEL_IN_USE`); deactivate it instead.
+- POST `/channels/{channel}/rotate-secret` — issues a new token and secret, invalidating the old pair.
+- GET `/channels/summary?from=…&to=…` — per channel: `orders`, `open_orders`, `gross`, `commission`, `net`.
+- GET `/channels/{channel}/orders?status=all|active|received|accepted|…` — paginated channel orders.
+- POST `/channels/{channel}/orders/{sale}/accept` — moves the order to `channel_status = accepted` and fires it to the kitchen (`422 CHANNEL_ERROR` once the order is closed).
+- POST `/channels/{channel}/orders/{sale}/reject` — `{ reason }`; voids the order and notifies the channel.
+- GET `/channels/{channel}/mappings`, PUT `/channels/{channel}/mappings` — `{ mappings: [{ external_item_id, external_variant_id?, product_id, product_variant_id?, option_map?, is_active? }] }`. The PUT replaces the whole set: rows missing from the payload are removed. `option_map` maps external option ids to modifier option ids.
+- POST `/channels/{channel}/menu/push` — builds the channel's menu from its mappings (`external_item_id`, price, availability, mapped options) and queues a `menu.pushed` event.
+- GET `/channels/{channel}/events?status=pending|sent|failed&type=…` — the outbound queue.
+- POST `/channels/{channel}/events/{event}/ack` — `{ status: sent|failed, error? }`; stamps `sent_at` or records the failure.
+
+### Inbound orders
+Channel partners push orders to `POST /channel-webhooks/{token}`, which is public (no Sanctum) and signed with `X-Channel-Signature: hex HMAC-SHA256 of the raw body using the channel secret`. The token selects the channel, and with it the tenant. A bad signature returns `401 CHANNEL_AUTH`; an unknown or inactive channel returns `404`.
+
+Payload: `{ event?: order.created|order.cancelled, external_order_id, outlet_id?, order_type?: delivery|pickup, placed_at?, notes?, promotion_code?, customer?: { name, phone, email, address }, fulfilment?: { contact_name, contact_phone, address, instructions, scheduled_at }, items: [{ external_item_id, external_variant_id?, quantity, options?: [external option id], notes? }] }`.
+
+Prices are never taken from the payload: items resolve through the channel mapping and are priced by the server menu. Unmapped items or options fail with `422 CHANNEL_ERROR`. Guests are matched by phone and created when new. `external_order_id` is the idempotency key — replaying a push returns the existing order with `200` instead of `201`. An `order.cancelled` event voids the matching open order.
+
+Inbound orders start as `channel_status = received` with `order_status = open`. `auto_accept` channels are accepted and fired immediately. Channel orders carry `channel_order_ref`, `channel_commission_percent` and `channel_commission` (snapshot of the percentage at order time). Accept, ready, dispatched, completed and cancelled transitions queue matching `order.*` events, each only once. At checkout an order whose channel has a `payment_method_code` is settled automatically with that rail, so the cashier never charges a prepaid marketplace guest twice. `POST /orders` also accepts `sales_channel_id` and `channel_order_ref` to tag an order taken at the till (a phone or WhatsApp order) to a channel.
 
 ## Response format
 Success: `{ "success": true, "message": "...", "data": {}, "meta": {} }`

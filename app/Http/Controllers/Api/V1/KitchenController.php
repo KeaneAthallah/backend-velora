@@ -8,6 +8,7 @@ use App\Models\KitchenStation;
 use App\Models\KitchenTicket;
 use App\Models\Outlet;
 use App\Services\AuthorizationService;
+use App\Services\ChannelService;
 use App\Services\KitchenService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -17,6 +18,7 @@ class KitchenController extends Controller
     public function __construct(
         protected AuthorizationService $authz,
         protected KitchenService $kitchen,
+        protected ChannelService $channels,
     ) {}
 
     public function stations(Request $request)
@@ -206,6 +208,13 @@ class KitchenController extends Controller
         $ticket->save();
 
         $this->kitchen->refreshSaleStatus($ticket->sale);
+
+        // A ticket moving to ready can roll the order forward, which a channel
+        // partner needs to hear about too.
+        $sale = $ticket->sale->fresh();
+        if ($sale) {
+            $this->channels->syncOrderStatus($sale, $sale->order_status);
+        }
 
         return $this->success($this->kitchen->ticketPayload($ticket->fresh()), 'Ticket updated');
     }
