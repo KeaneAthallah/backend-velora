@@ -179,6 +179,12 @@ Route::prefix('v1')->group(function () {
             Route::post('purchase-orders/{purchaseOrder}/approve', [\App\Http\Controllers\Api\V1\PurchaseOrderController::class, 'approve']);
             Route::post('purchase-orders/{purchaseOrder}/receive', [\App\Http\Controllers\Api\V1\PurchaseOrderController::class, 'receive']);
 
+            // reorder copilot (demand forecast + constrained PO draft + approval)
+            Route::get('reorder/forecast', [\App\Http\Controllers\Api\V1\ReorderController::class, 'forecast']);
+            Route::post('reorder/suggest', [\App\Http\Controllers\Api\V1\ReorderController::class, 'suggest']);
+            Route::post('reorder/items/{purchaseOrderItemId}/approve', [\App\Http\Controllers\Api\V1\ReorderController::class, 'approve']);
+            Route::post('reorder/items/{purchaseOrderItemId}/reject', [\App\Http\Controllers\Api\V1\ReorderController::class, 'reject']);
+
             // cash registers/shifts
             Route::apiResource('cash-registers', \App\Http\Controllers\Api\V1\CashRegisterController::class);
             Route::post('shifts/open', [\App\Http\Controllers\Api\V1\ShiftController::class, 'open']);
