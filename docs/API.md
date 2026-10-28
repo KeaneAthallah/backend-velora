@@ -15,7 +15,7 @@ Base URL: `/api/v1`
 Protected endpoints require `Authorization: Bearer <token>`. Tenant context resolved via `X-Business-Id` and optional `X-Outlet-Id` headers (or `business_id`/`outlet_id` body params). Platform admins may access any business.
 
 ## Modules
-Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Payments (create/refund), Refunds (approve/reject), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
+Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Payments (create/refund), Refunds (approve/reject), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
 
 ## Menu, modifiers, and availability
 All paths require tenant context. Permissions: `menu.view`, `menu.manage`, `menu.availability`, `menu.dayparts`.
@@ -50,6 +50,21 @@ Permissions: `ingredients.view`, `ingredients.manage`, `recipes.view`, `recipes.
 Costing uses `effective_quantity = quantity × (1 + waste_percent / 100)` and `line_cost = effective_quantity × ingredient.cost_per_unit`, all as 4-dp decimal strings. Variant lines replace product lines for the same ingredient; the effective variant recipe is the base lines plus overrides.
 
 Completing a sale deducts every tracked ingredient in the sold products' recipes (variant-aware) and writes `consumption` movements referencing the sale. A shortage returns `422 SALE_ERROR` and rolls the sale back. Voiding a sale writes `void` movements that restore exactly what was consumed.
+
+## Orders (open tabs, kitchen flow)
+Permissions: `orders.view`, `orders.create`, `orders.manage`, `orders.cancel`.
+
+An order is a draft sale, not a second table: `sales.status = draft` until checkout, with an extra `order_status` (`open → in_kitchen → ready → served → completed`, or `cancelled`). `order_type` is `dine_in | takeaway | delivery | pickup`.
+
+- GET `/orders?outlet_id=…&status=active|all|open|in_kitchen|ready|served|completed|cancelled&order_type=…&q=…&from=…&to=…` — paginated orders; `status=active` (default) returns every not-yet-completed order for the outlet.
+- POST `/orders` — `{ order_type, outlet_id?, customer_id?, notes?, idempotency_key?, fulfilment?, items[] }`. Item shape matches `POST /sales` (`product_id`, `product_variant_id?`, `quantity`, `option_ids[]`, `discount_amount?`, `notes?`). Prices, modifiers, and availability are resolved server-side exactly like a sale.
+- GET `/orders/{sale}` — one order with items, customer, outlet and payments.
+- PUT `/orders/{sale}` — edit an open order: `order_type`, `customer_id`, `notes`, `fulfilment`, and/or `items[]` (a full replacement, repriced). Returns `422 ORDER_ERROR` once the order is no longer open.
+- POST `/orders/{sale}/status` — `{ status: in_kitchen|ready|served }`. Forward-only; repeats of the current status are idempotent, backward moves return `422 ORDER_ERROR`. Sets `fired_at`, `ready_at`, `served_at`.
+- POST `/orders/{sale}/checkout` — finalises the order: deducts product stock and recipe ingredients, assigns the receipt number, and sets `status=completed`, `order_status=completed`.
+- POST `/orders/{sale}/cancel` — `{ reason }`; voids the draft without touching stock.
+
+Order numbers are per outlet + order type + business day: `{OUTLETCODE}-{DI|TA|DL|PU}-{YYYYMMDD}-{seq:03}`. Draft orders keep `receipt_number = OPEN-{order_number}` until checkout. Delivery orders must include `fulfilment.contact_phone` and `fulfilment.address`. Immediate sales (`POST /sales`) also accept `order_type` and `fulfilment` and return the same order fields with `order_status = completed`.
 
 ## Response format
 Success: `{ "success": true, "message": "...", "data": {}, "meta": {} }`

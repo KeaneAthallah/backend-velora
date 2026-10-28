@@ -10,14 +10,22 @@ class Sale extends Model
 {
     use HasFactory, SoftDeletes;
 
-    protected $fillable = ['business_id', 'outlet_id', 'device_id', 'cashier_id', 'customer_id', 'shift_id', 'receipt_number', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'total', 'paid_amount', 'change_amount', 'notes', 'idempotency_key', 'completed_at', 'voided_at', 'voided_by', 'void_reason'];
+    public const ORDER_TYPES = ['dine_in', 'takeaway', 'delivery', 'pickup'];
+
+    public const ORDER_STATUSES = ['open', 'in_kitchen', 'ready', 'served', 'completed', 'cancelled'];
+
+    public const ACTIVE_ORDER_STATUSES = ['open', 'in_kitchen', 'ready', 'served'];
+
+    protected $fillable = ['business_id', 'outlet_id', 'device_id', 'cashier_id', 'customer_id', 'shift_id', 'receipt_number', 'order_number', 'order_type', 'order_status', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'total', 'paid_amount', 'change_amount', 'notes', 'fulfilment', 'idempotency_key', 'completed_at', 'fired_at', 'ready_at', 'served_at', 'voided_at', 'voided_by', 'void_reason'];
 
     protected function casts(): array
     {
         return [
             'subtotal' => 'decimal:4', 'discount_amount' => 'decimal:4', 'tax_amount' => 'decimal:4',
             'total' => 'decimal:4', 'paid_amount' => 'decimal:4', 'change_amount' => 'decimal:4',
-            'completed_at' => 'datetime', 'voided_at' => 'datetime',
+            'fulfilment' => 'array',
+            'completed_at' => 'datetime', 'fired_at' => 'datetime', 'ready_at' => 'datetime',
+            'served_at' => 'datetime', 'voided_at' => 'datetime',
         ];
     }
 
@@ -54,5 +62,15 @@ class Sale extends Model
     public function refunds()
     {
         return $this->hasMany(Refund::class);
+    }
+
+    public function scopeActiveOrders($query)
+    {
+        return $query->whereIn('order_status', self::ACTIVE_ORDER_STATUSES);
+    }
+
+    public function isOpenOrder(): bool
+    {
+        return in_array($this->order_status, self::ACTIVE_ORDER_STATUSES, true);
     }
 }

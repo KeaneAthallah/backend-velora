@@ -104,6 +104,15 @@ Route::prefix('v1')->group(function () {
             Route::post('payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'store']);
             Route::post('payments/{payment}/refund', [\App\Http\Controllers\Api\V1\PaymentController::class, 'refund']);
 
+            // orders (open tabs, kitchen flow, pay later)
+            Route::get('orders', [\App\Http\Controllers\Api\V1\OrderController::class, 'index']);
+            Route::post('orders', [\App\Http\Controllers\Api\V1\OrderController::class, 'store']);
+            Route::get('orders/{sale}', [\App\Http\Controllers\Api\V1\OrderController::class, 'show']);
+            Route::put('orders/{sale}', [\App\Http\Controllers\Api\V1\OrderController::class, 'update']);
+            Route::post('orders/{sale}/status', [\App\Http\Controllers\Api\V1\OrderController::class, 'status']);
+            Route::post('orders/{sale}/checkout', [\App\Http\Controllers\Api\V1\OrderController::class, 'checkout']);
+            Route::post('orders/{sale}/cancel', [\App\Http\Controllers\Api\V1\OrderController::class, 'cancel']);
+
             // refunds
             Route::get('refunds', [\App\Http\Controllers\Api\V1\RefundController::class, 'index']);
             Route::post('refunds/{refund}/approve', [\App\Http\Controllers\Api\V1\RefundController::class, 'approve']);

@@ -7,13 +7,10 @@ use App\Models\InventoryBalance;
 use App\Models\InventoryMovement;
 use App\Models\Outlet;
 use App\Models\Product;
-use App\Models\ProductVariant;
 use App\Models\Sale;
-use App\Models\SaleItem;
-use App\Models\TaxRate;
 use App\Services\AuthorizationService;
-use App\Services\MenuService;
 use App\Services\RecipeService;
+use App\Services\SaleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -21,7 +18,7 @@ class SaleController extends Controller
 {
     public function __construct(
         protected AuthorizationService $authz,
-        protected MenuService $menuService,
+        protected SaleService $saleService,
         protected RecipeService $recipeService,
     ) {}
 
@@ -30,17 +27,34 @@ class SaleController extends Controller
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'sales.view', $businessId);
         $q = Sale::where('business_id', $businessId)->with('items', 'payments');
+        // Open tabs live on the order board; the receipt ledger only shows
+        // finalised or voided sales unless a status is requested explicitly.
+        if (! $request->filled('status') && ! $request->filled('order_status')) {
+            $q->where('status', '<>', 'draft');
+        }
         if ($request->filled('outlet_id')) {
             $q->where('outlet_id', $request->input('outlet_id'));
         }
         if ($request->filled('status')) {
             $q->where('status', $request->input('status'));
         }
+        if ($request->filled('order_status')) {
+            $q->where('order_status', $request->input('order_status'));
+        }
+        if ($request->filled('order_type')) {
+            $q->where('order_type', $request->input('order_type'));
+        }
         if ($request->filled('from')) {
             $q->where('created_at', '>=', $request->input('from'));
         }
         if ($request->filled('to')) {
             $q->where('created_at', '<=', $request->input('to'));
+        }
+        if ($request->filled('q')) {
+            $term = '%'.$request->input('q').'%';
+            $q->where(function ($sub) use ($term) {
+                $sub->where('receipt_number', 'like', $term)->orWhere('order_number', 'like', $term);
+            });
         }
 
         return $this->success($q->orderByDesc('id')->paginate(50));
@@ -54,7 +68,7 @@ class SaleController extends Controller
         }
         $this->authz->requirePermission($request->user(), 'sales.view', $businessId);
 
-        return $this->success($sale->load('items', 'payments', 'refunds'));
+        return $this->success($sale->load('items', 'payments', 'refunds', 'customer'));
     }
 
     public function store(Request $request)
@@ -73,6 +87,13 @@ class SaleController extends Controller
             'tax_rate_id' => 'nullable|integer',
             'idempotency_key' => 'nullable|string|max:128',
             'notes' => 'nullable|string',
+            'order_type' => 'nullable|in:dine_in,takeaway,delivery,pickup',
+            'fulfilment' => 'nullable|array',
+            'fulfilment.contact_name' => 'nullable|string|max:255',
+            'fulfilment.contact_phone' => 'nullable|string|max:32',
+            'fulfilment.address' => 'nullable|string|max:500',
+            'fulfilment.scheduled_at' => 'nullable|date',
+            'fulfilment.instructions' => 'nullable|string|max:500',
             'items' => 'required|array|min:1',
             'items.*.product_id' => 'required|integer|exists:products,id',
             'items.*.product_variant_id' => 'nullable|integer',
@@ -80,8 +101,15 @@ class SaleController extends Controller
             'items.*.discount_amount' => 'nullable|numeric|min:0',
             'items.*.option_ids' => 'nullable|array',
             'items.*.option_ids.*' => 'integer',
+            'items.*.notes' => 'nullable|string|max:255',
             'items.*.unit_price_override' => 'nullable|numeric|min:0',
         ]);
+
+        $orderType = $data['order_type'] ?? 'takeaway';
+
+        if ($orderType === 'delivery' && (empty($data['fulfilment']['address']) || empty($data['fulfilment']['contact_phone']))) {
+            return $this->error('Delivery orders need a contact phone and address', 422, [], 'ORDER_ERROR');
+        }
 
         // idempotency check
         if (! empty($data['idempotency_key'])) {
@@ -92,112 +120,15 @@ class SaleController extends Controller
         }
 
         $outlet = Outlet::where('id', $outletId)->where('business_id', $businessId)->firstOrFail();
-        $taxRate = null;
-        if (! empty($data['tax_rate_id'])) {
-            $taxRate = TaxRate::where('id', $data['tax_rate_id'])->where('business_id', $businessId)->first();
-        } else {
-            $taxRate = TaxRate::where('business_id', $businessId)->where('is_default', true)->first();
-        }
-        $taxRateValue = $taxRate ? (string) $taxRate->rate : '0';
-        $taxType = $taxRate ? $taxRate->type : 'exclusive';
 
         try {
-            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $taxRateValue, $taxType, $request) {
-                // resolve prices and validate
-                $subtotal = '0';
-                $totalDiscount = '0';
-                $totalTax = '0';
-                $resolvedItems = [];
-                foreach ($data['items'] as $it) {
-                    $product = Product::where('id', $it['product_id'])->where('business_id', $businessId)->firstOrFail();
-                    if (! $product->is_active) {
-                        throw new \RuntimeException('Product inactive: '.$product->id);
-                    }
-                    $variant = null;
-                    if (! empty($it['product_variant_id'])) {
-                        $variant = ProductVariant::where('id', $it['product_variant_id'])->where('product_id', $product->id)->firstOrFail();
-                    }
-
-                    $availability = $this->menuService->productAvailability($product, $outletId, $variant);
-                    if (! $availability['available']) {
-                        throw new \RuntimeException("Unavailable: {$product->name} ({$availability['reason']})");
-                    }
-
-                    // Server-authoritative pricing: base price from outlet override / variant / product,
-                    // plus the sum of selected modifier price deltas.
-                    $basePrice = $this->menuService->basePrice($product, $variant, $outletId);
-                    $optionIds = $it['option_ids'] ?? [];
-                    $selection = $this->menuService->resolveItem(
-                        $product,
-                        $variant,
-                        $optionIds,
-                        $businessId,
-                        $outletId,
-                    );
-                    $price = bcadd($basePrice, $selection['delta'], 4);
-                    $modifierSnapshot = $selection['modifiers'];
-
-                    $qty = (string) $it['quantity'];
-                    $lineSubtotal = bcmul($price, $qty, 4);
-                    $lineDiscount = (string) ($it['discount_amount'] ?? 0);
-                    $lineAfterDiscount = bcsub($lineSubtotal, $lineDiscount, 4);
-                    // tax
-                    $lineTax = '0';
-                    if (bccomp($taxRateValue, '0', 4) !== 0) {
-                        if ($taxType === 'inclusive') {
-                            // tax included in price
-                            $lineTax = bcsub($lineAfterDiscount, bcdiv($lineAfterDiscount, bcadd('1', bcdiv($taxRateValue, '100', 6), 6), 6), 4);
-                        } else {
-                            $lineTax = bcmul($lineAfterDiscount, bcdiv($taxRateValue, '100', 6), 4);
-                        }
-                    }
-                    $lineTotal = $taxType === 'inclusive' ? $lineAfterDiscount : bcadd($lineAfterDiscount, $lineTax, 4);
-
-                    $subtotal = bcadd($subtotal, $lineSubtotal, 4);
-                    $totalDiscount = bcadd($totalDiscount, $lineDiscount, 4);
-                    $totalTax = bcadd($totalTax, $lineTax, 4);
-
-                    $resolvedItems[] = [
-                        'product' => $product,
-                        'variant' => $variant,
-                        'product_id' => $product->id,
-                        'product_variant_id' => $it['product_variant_id'] ?? null,
-                        'product_name' => $product->name.($variant ? ' - '.$variant->name : ''),
-                        'sku' => $variant ? $variant->sku : $product->sku,
-                        'base_unit_price' => $basePrice,
-                        'unit_price' => $price,
-                        'modifiers' => $modifierSnapshot,
-                        'cost_price' => $variant && $variant->cost_price !== null ? (string) $variant->cost_price : (string) $product->cost_price,
-                        'quantity' => $qty,
-                        'discount_amount' => $lineDiscount,
-                        'tax_rate' => $taxRateValue,
-                        'tax_amount' => $lineTax,
-                        'line_total' => $lineTotal,
-                    ];
-
-                    // inventory check/decrement
-                    if ($product->track_inventory) {
-                        $bal = InventoryBalance::lockForUpdate()->firstOrCreate(
-                            ['outlet_id' => $outletId, 'product_id' => $product->id, 'product_variant_id' => $it['product_variant_id'] ?? null],
-                            ['business_id' => $businessId, 'quantity' => 0, 'reserved_quantity' => 0]
-                        );
-                        if (bccomp((string) $bal->quantity, $qty, 4) < 0) {
-                            throw new \RuntimeException('Insufficient stock for product '.$product->id);
-                        }
-                        $bal->quantity = bcsub((string) $bal->quantity, $qty, 4);
-                        $bal->save();
-                        // movement recorded after sale created; store for later
-                    }
-                }
-
-                $total = $taxType === 'inclusive'
-                    ? bcsub(bcadd($subtotal, '0', 4), $totalDiscount, 4) // subtotal includes tax
-                    : bcadd(bcsub(bcadd($subtotal, '0', 4), $totalDiscount, 4), $totalTax, 4);
-                // Actually recompute total cleanly
-                $total = bcadd(bcsub($subtotal, $totalDiscount, 4), $taxType === 'inclusive' ? '0' : $totalTax, 4);
-                if ($taxType === 'inclusive') {
-                    $total = bcsub($subtotal, $totalDiscount, 4);
-                }
+            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $orderType, $request) {
+                $priced = $this->saleService->priceItems(
+                    $data['items'],
+                    $businessId,
+                    $outletId,
+                    $data['tax_rate_id'] ?? null,
+                );
 
                 $sale = Sale::create([
                     'business_id' => $businessId,
@@ -207,68 +138,29 @@ class SaleController extends Controller
                     'customer_id' => $data['customer_id'] ?? null,
                     'shift_id' => $data['shift_id'] ?? null,
                     'receipt_number' => 'PENDING',
+                    'order_number' => $this->saleService->nextOrderNumber($outlet, $orderType),
+                    'order_type' => $orderType,
+                    'order_status' => 'completed',
                     'status' => 'completed',
-                    'subtotal' => $subtotal,
-                    'discount_amount' => $totalDiscount,
-                    'tax_amount' => $totalTax,
-                    'total' => $total,
+                    'subtotal' => $priced['subtotal'],
+                    'discount_amount' => $priced['discount_amount'],
+                    'tax_amount' => $priced['tax_amount'],
+                    'total' => $priced['total'],
                     'paid_amount' => 0,
                     'change_amount' => 0,
                     'notes' => $data['notes'] ?? null,
+                    'fulfilment' => $data['fulfilment'] ?? null,
                     'idempotency_key' => $data['idempotency_key'] ?? null,
                     'completed_at' => now(),
                 ]);
 
-                foreach ($resolvedItems as $ri) {
-                    SaleItem::create([
-                        'sale_id' => $sale->id,
-                        'product_id' => $ri['product_id'],
-                        'product_variant_id' => $ri['product_variant_id'],
-                        'product_name' => $ri['product_name'],
-                        'sku' => $ri['sku'],
-                        'base_unit_price' => $ri['base_unit_price'],
-                        'unit_price' => $ri['unit_price'],
-                        'cost_price' => $ri['cost_price'],
-                        'quantity' => $ri['quantity'],
-                        'discount_amount' => $ri['discount_amount'],
-                        'tax_rate' => $ri['tax_rate'],
-                        'tax_amount' => $ri['tax_amount'],
-                        'line_total' => $ri['line_total'],
-                        'modifiers' => $ri['modifiers'],
-                    ]);
+                $this->saleService->attachItems($sale, $priced['items']);
 
-                    $product = $ri['product'];
-                    if ($product->track_inventory) {
-                        InventoryMovement::create([
-                            'business_id' => $businessId,
-                            'outlet_id' => $outletId,
-                            'product_id' => $ri['product_id'],
-                            'product_variant_id' => $ri['product_variant_id'],
-                            'type' => 'sale',
-                            'quantity' => bcmul((string) $ri['quantity'], '-1', 4),
-                            'balance_after' => 0, // placeholder
-                            'reference_type' => 'sale',
-                            'reference_id' => $sale->id,
-                            'reason' => 'Sale '.$sale->id,
-                            'actor_id' => $request->user()->id,
-                        ]);
-                        // fix balance_after
-                        $bal = InventoryBalance::where('outlet_id', $outletId)->where('product_id', $ri['product_id'])->where('product_variant_id', $ri['product_variant_id'])->first();
-                        $last = InventoryMovement::where('reference_type', 'sale')->where('reference_id', $sale->id)->where('product_id', $ri['product_id'])->orderByDesc('id')->first();
-                        if ($last && $bal) {
-                            $last->balance_after = $bal->quantity;
-                            $last->save();
-                        }
-                    }
-                }
-
-                // receipt number
-                $receiptNumber = $outlet->code.'-'.now()->format('Ymd').'-'.str_pad((string) $sale->id, 6, '0', STR_PAD_LEFT);
-                $sale->receipt_number = $receiptNumber;
+                $sale->receipt_number = $this->saleService->receiptNumber($sale, $outlet);
                 $sale->save();
 
-                // deduct ingredient stock from product recipes
-                $this->recipeService->consumeForSale($sale, $outletId, $request->user()->id);
+                // deduct product stock and recipe ingredients
+                $this->saleService->deductStock($sale, $outletId, $request->user()->id);
 
                 return $sale;
             });
@@ -317,6 +209,7 @@ class SaleController extends Controller
                 }
             }
             $sale->status = 'voided';
+            $sale->order_status = 'cancelled';
             $sale->voided_at = now();
             $sale->voided_by = $request->user()->id;
             $sale->void_reason = $data['reason'];
