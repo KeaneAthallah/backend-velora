@@ -23,6 +23,7 @@ class PermissionSeeder extends Seeder
             'menu.view', 'menu.manage', 'menu.availability', 'menu.dayparts',
             'ingredients.view', 'ingredients.manage', 'recipes.view', 'recipes.manage',
             'orders.view', 'orders.create', 'orders.manage', 'orders.cancel',
+            'tables.view', 'tables.manage',
             'sales.view', 'sales.create', 'sales.void', 'sales.refund',
             'shifts.view', 'shifts.manage',
             'settings.manage',

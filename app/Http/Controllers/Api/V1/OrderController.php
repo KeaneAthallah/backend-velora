@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\DiningTable;
 use App\Models\Outlet;
 use App\Models\Sale;
 use App\Services\AuthorizationService;
@@ -40,7 +41,7 @@ class OrderController extends Controller
 
         $query = Sale::where('business_id', $businessId)
             ->whereNotNull('order_number')
-            ->with('items', 'customer', 'outlet');
+            ->with('items', 'customer', 'outlet', 'table');
 
         if ($outletId) {
             $query->where('outlet_id', $outletId);
@@ -82,7 +83,7 @@ class OrderController extends Controller
         }
         $this->authz->requirePermission($request->user(), 'orders.view', $businessId);
 
-        return $this->success($sale->load('items', 'customer', 'outlet', 'payments'));
+        return $this->success($sale->load('items', 'customer', 'outlet', 'payments', 'table'));
     }
 
     public function store(Request $request)
@@ -107,7 +108,7 @@ class OrderController extends Controller
                 ->where('idempotency_key', $data['idempotency_key'])
                 ->first();
             if ($existing) {
-                return $this->success($existing->load('items', 'customer'), 'Order already exists (idempotent)');
+                return $this->success($existing->load('items', 'customer', 'table'), 'Order already exists (idempotent)');
             }
         }
 
@@ -117,8 +118,21 @@ class OrderController extends Controller
             return $this->error('Delivery orders need a contact phone and address', 422, [], 'ORDER_ERROR');
         }
 
+        $tableId = null;
+        if (! empty($data['table_id'])) {
+            $table = $this->findTable($businessId, $outletId, (int) $data['table_id']);
+            if (! $table) {
+                return $this->error('Not found', 404);
+            }
+            $conflict = $this->tableConflict($table, $orderType);
+            if ($conflict) {
+                return $this->error($conflict, 422, [], 'TABLE_ERROR');
+            }
+            $tableId = $table->id;
+        }
+
         try {
-            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $orderType, $request) {
+            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $orderType, $tableId, $request) {
                 $priced = $this->saleService->priceItems(
                     $data['items'],
                     $businessId,
@@ -133,6 +147,7 @@ class OrderController extends Controller
                     'outlet_id' => $outletId,
                     'cashier_id' => $request->user()->id,
                     'customer_id' => $data['customer_id'] ?? null,
+                    'table_id' => $tableId,
                     'receipt_number' => 'OPEN-'.$orderNumber,
                     'order_number' => $orderNumber,
                     'order_type' => $orderType,
@@ -157,7 +172,7 @@ class OrderController extends Controller
             return $this->error($e->getMessage(), 422, [], 'ORDER_ERROR');
         }
 
-        return $this->success($sale->load('items', 'customer'), 'Order opened', 201);
+        return $this->success($sale->load('items', 'customer', 'table'), 'Order opened', 201);
     }
 
     public function update(Request $request, Sale $sale)
@@ -175,6 +190,7 @@ class OrderController extends Controller
         $data = $request->validate([
             'order_type' => ['sometimes', Rule::in(Sale::ORDER_TYPES)],
             'customer_id' => 'sometimes|nullable|integer|exists:customers,id',
+            'table_id' => 'sometimes|nullable|integer',
             'tax_rate_id' => 'nullable|integer',
             'notes' => 'sometimes|nullable|string',
             'fulfilment' => 'sometimes|nullable|array',
@@ -200,10 +216,29 @@ class OrderController extends Controller
             return $this->error('Delivery orders need a contact phone and address', 422, [], 'ORDER_ERROR');
         }
 
+        $tableId = $sale->table_id;
+        if (array_key_exists('table_id', $data)) {
+            $tableId = $data['table_id'] ? (int) $data['table_id'] : null;
+            if ($tableId) {
+                $table = $this->findTable($businessId, $sale->outlet_id, $tableId);
+                if (! $table) {
+                    return $this->error('Not found', 404);
+                }
+                $conflict = $this->tableConflict($table, $orderType, $sale->id);
+                if ($conflict) {
+                    return $this->error($conflict, 422, [], 'TABLE_ERROR');
+                }
+            }
+        } elseif ($orderType !== 'dine_in') {
+            // Switching away from dine-in releases the table for other guests.
+            $tableId = null;
+        }
+
         try {
-            DB::transaction(function () use ($sale, $data, $businessId, $orderType, $fulfilment) {
+            DB::transaction(function () use ($sale, $data, $businessId, $orderType, $fulfilment, $tableId) {
                 $sale->order_type = $orderType;
                 $sale->fulfilment = $fulfilment;
+                $sale->table_id = $tableId;
                 if (array_key_exists('customer_id', $data)) {
                     $sale->customer_id = $data['customer_id'];
                 }
@@ -226,7 +261,7 @@ class OrderController extends Controller
             return $this->error($e->getMessage(), 422, [], 'ORDER_ERROR');
         }
 
-        return $this->success($sale->fresh()->load('items', 'customer'), 'Order updated');
+        return $this->success($sale->fresh()->load('items', 'customer', 'table'), 'Order updated');
     }
 
     public function status(Request $request, Sale $sale)
@@ -249,7 +284,7 @@ class OrderController extends Controller
         $current = $sale->order_status;
 
         if ($next === $current) {
-            return $this->success($sale->load('items', 'customer'));
+            return $this->success($sale->load('items', 'customer', 'table'));
         }
 
         if (self::STATUS_RANK[$next] <= self::STATUS_RANK[$current]) {
@@ -262,7 +297,7 @@ class OrderController extends Controller
         $sale->served_at = $next === 'served' ? now() : null;
         $sale->save();
 
-        return $this->success($sale->load('items', 'customer'), 'Order updated');
+        return $this->success($sale->load('items', 'customer', 'table'), 'Order updated');
     }
 
     public function checkout(Request $request, Sale $sale)
@@ -299,7 +334,7 @@ class OrderController extends Controller
             return $this->error($e->getMessage(), 422, [], 'SALE_ERROR');
         }
 
-        return $this->success($sale->fresh()->load('items', 'payments', 'customer'), 'Order checked out');
+        return $this->success($sale->fresh()->load('items', 'payments', 'customer', 'table'), 'Order checked out');
     }
 
     public function cancel(Request $request, Sale $sale)
@@ -323,7 +358,7 @@ class OrderController extends Controller
         $sale->void_reason = $data['reason'];
         $sale->save();
 
-        return $this->success($sale->load('items', 'customer'), 'Order cancelled');
+        return $this->success($sale->load('items', 'customer', 'table'), 'Order cancelled');
     }
 
     /**
@@ -334,6 +369,7 @@ class OrderController extends Controller
         $data = $request->validate([
             'order_type' => ['required', Rule::in(Sale::ORDER_TYPES)],
             'customer_id' => 'nullable|integer|exists:customers,id',
+            'table_id' => 'nullable|integer',
             'tax_rate_id' => 'nullable|integer',
             'notes' => 'nullable|string',
             'idempotency_key' => 'nullable|string|max:128',
@@ -354,5 +390,32 @@ class OrderController extends Controller
         ]);
 
         return $data;
+    }
+
+    private function findTable(int $businessId, int $outletId, int $tableId): ?DiningTable
+    {
+        return DiningTable::where('business_id', $businessId)
+            ->where('outlet_id', $outletId)
+            ->find($tableId);
+    }
+
+    /**
+     * Returns a human readable reason when the table cannot take this order.
+     */
+    private function tableConflict(DiningTable $table, string $orderType, ?int $ignoreSaleId = null): ?string
+    {
+        if ($orderType !== 'dine_in') {
+            return 'Tables are only for dine-in orders';
+        }
+        if (! $table->is_active) {
+            return 'This table is inactive';
+        }
+
+        $query = $table->activeOrder();
+        if ($ignoreSaleId) {
+            $query->whereKeyNot($ignoreSaleId);
+        }
+
+        return $query->exists() ? 'This table already has an open order' : null;
     }
 }

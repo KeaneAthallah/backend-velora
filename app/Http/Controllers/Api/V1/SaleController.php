@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\DiningTable;
 use App\Models\InventoryBalance;
 use App\Models\InventoryMovement;
 use App\Models\Outlet;
@@ -26,7 +27,7 @@ class SaleController extends Controller
     {
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'sales.view', $businessId);
-        $q = Sale::where('business_id', $businessId)->with('items', 'payments');
+        $q = Sale::where('business_id', $businessId)->with('items', 'payments', 'table');
         // Open tabs live on the order board; the receipt ledger only shows
         // finalised or voided sales unless a status is requested explicitly.
         if (! $request->filled('status') && ! $request->filled('order_status')) {
@@ -68,7 +69,7 @@ class SaleController extends Controller
         }
         $this->authz->requirePermission($request->user(), 'sales.view', $businessId);
 
-        return $this->success($sale->load('items', 'payments', 'refunds', 'customer'));
+        return $this->success($sale->load('items', 'payments', 'refunds', 'customer', 'table'));
     }
 
     public function store(Request $request)
@@ -84,6 +85,7 @@ class SaleController extends Controller
             'customer_id' => 'nullable|integer|exists:customers,id',
             'device_id' => 'nullable|integer',
             'shift_id' => 'nullable|integer',
+            'table_id' => 'nullable|integer',
             'tax_rate_id' => 'nullable|integer',
             'idempotency_key' => 'nullable|string|max:128',
             'notes' => 'nullable|string',
@@ -111,6 +113,26 @@ class SaleController extends Controller
             return $this->error('Delivery orders need a contact phone and address', 422, [], 'ORDER_ERROR');
         }
 
+        $tableId = null;
+        if (! empty($data['table_id'])) {
+            if ($orderType !== 'dine_in') {
+                return $this->error('Tables are only for dine-in orders', 422, [], 'TABLE_ERROR');
+            }
+            $table = DiningTable::where('business_id', $businessId)
+                ->where('outlet_id', $outletId)
+                ->find($data['table_id']);
+            if (! $table) {
+                return $this->error('Not found', 404);
+            }
+            if (! $table->is_active) {
+                return $this->error('This table is inactive', 422, [], 'TABLE_ERROR');
+            }
+            if ($table->activeOrder()->exists()) {
+                return $this->error('This table already has an open order', 422, [], 'TABLE_ERROR');
+            }
+            $tableId = $table->id;
+        }
+
         // idempotency check
         if (! empty($data['idempotency_key'])) {
             $existing = Sale::where('business_id', $businessId)->where('idempotency_key', $data['idempotency_key'])->first();
@@ -122,7 +144,7 @@ class SaleController extends Controller
         $outlet = Outlet::where('id', $outletId)->where('business_id', $businessId)->firstOrFail();
 
         try {
-            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $orderType, $request) {
+            $sale = DB::transaction(function () use ($businessId, $outletId, $outlet, $data, $orderType, $tableId, $request) {
                 $priced = $this->saleService->priceItems(
                     $data['items'],
                     $businessId,
@@ -136,6 +158,7 @@ class SaleController extends Controller
                     'device_id' => $data['device_id'] ?? null,
                     'cashier_id' => $request->user()->id,
                     'customer_id' => $data['customer_id'] ?? null,
+                    'table_id' => $tableId,
                     'shift_id' => $data['shift_id'] ?? null,
                     'receipt_number' => 'PENDING',
                     'order_number' => $this->saleService->nextOrderNumber($outlet, $orderType),
@@ -168,7 +191,7 @@ class SaleController extends Controller
             return $this->error($e->getMessage(), 422, [], 'SALE_ERROR');
         }
 
-        return $this->success($sale->load('items'), 'Sale completed', 201);
+        return $this->success($sale->load('items', 'table'), 'Sale completed', 201);
     }
 
     public function void(Request $request, Sale $sale)

@@ -16,7 +16,7 @@ class Sale extends Model
 
     public const ACTIVE_ORDER_STATUSES = ['open', 'in_kitchen', 'ready', 'served'];
 
-    protected $fillable = ['business_id', 'outlet_id', 'device_id', 'cashier_id', 'customer_id', 'shift_id', 'receipt_number', 'order_number', 'order_type', 'order_status', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'total', 'paid_amount', 'change_amount', 'notes', 'fulfilment', 'idempotency_key', 'completed_at', 'fired_at', 'ready_at', 'served_at', 'voided_at', 'voided_by', 'void_reason'];
+    protected $fillable = ['business_id', 'outlet_id', 'device_id', 'cashier_id', 'customer_id', 'table_id', 'shift_id', 'receipt_number', 'order_number', 'order_type', 'order_status', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'total', 'paid_amount', 'change_amount', 'notes', 'fulfilment', 'idempotency_key', 'completed_at', 'fired_at', 'ready_at', 'served_at', 'voided_at', 'voided_by', 'void_reason'];
 
     protected function casts(): array
     {
@@ -47,6 +47,11 @@ class Sale extends Model
     public function customer()
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    public function table()
+    {
+        return $this->belongsTo(DiningTable::class, 'table_id');
     }
 
     public function items()

@@ -113,6 +113,17 @@ Route::prefix('v1')->group(function () {
             Route::post('orders/{sale}/checkout', [\App\Http\Controllers\Api\V1\OrderController::class, 'checkout']);
             Route::post('orders/{sale}/cancel', [\App\Http\Controllers\Api\V1\OrderController::class, 'cancel']);
 
+            // floor plan (areas + dining tables)
+            Route::get('tables', [\App\Http\Controllers\Api\V1\TableController::class, 'index']);
+            Route::post('tables', [\App\Http\Controllers\Api\V1\TableController::class, 'store']);
+            Route::put('tables/{table}', [\App\Http\Controllers\Api\V1\TableController::class, 'update']);
+            Route::delete('tables/{table}', [\App\Http\Controllers\Api\V1\TableController::class, 'destroy']);
+            Route::post('tables/{table}/status', [\App\Http\Controllers\Api\V1\TableController::class, 'status']);
+            Route::get('floor-areas', [\App\Http\Controllers\Api\V1\TableController::class, 'areas']);
+            Route::post('floor-areas', [\App\Http\Controllers\Api\V1\TableController::class, 'storeArea']);
+            Route::put('floor-areas/{area}', [\App\Http\Controllers\Api\V1\TableController::class, 'updateArea']);
+            Route::delete('floor-areas/{area}', [\App\Http\Controllers\Api\V1\TableController::class, 'destroyArea']);
+
             // refunds
             Route::get('refunds', [\App\Http\Controllers\Api\V1\RefundController::class, 'index']);
             Route::post('refunds/{refund}/approve', [\App\Http\Controllers\Api\V1\RefundController::class, 'approve']);
