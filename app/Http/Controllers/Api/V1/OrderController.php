@@ -7,6 +7,7 @@ use App\Models\DiningTable;
 use App\Models\Outlet;
 use App\Models\Sale;
 use App\Services\AuthorizationService;
+use App\Services\KitchenService;
 use App\Services\SaleService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -27,6 +28,7 @@ class OrderController extends Controller
     public function __construct(
         protected AuthorizationService $authz,
         protected SaleService $saleService,
+        protected KitchenService $kitchen,
     ) {}
 
     public function index(Request $request)
@@ -297,6 +299,13 @@ class OrderController extends Controller
         $sale->served_at = $next === 'served' ? now() : null;
         $sale->save();
 
+        if ($next === 'in_kitchen') {
+            // Firing sends the order to every station that owns one of its items.
+            $this->kitchen->fireOrder($sale);
+        } else {
+            $this->kitchen->syncFromOrderStatus($sale, $next);
+        }
+
         return $this->success($sale->load('items', 'customer', 'table'), 'Order updated');
     }
 
@@ -329,6 +338,8 @@ class OrderController extends Controller
                 $sale->served_at = $sale->served_at ?? now();
                 $sale->completed_at = now();
                 $sale->save();
+
+                $this->kitchen->syncFromOrderStatus($sale, 'completed');
             });
         } catch (\RuntimeException $e) {
             return $this->error($e->getMessage(), 422, [], 'SALE_ERROR');
@@ -357,6 +368,8 @@ class OrderController extends Controller
         $sale->voided_by = $request->user()->id;
         $sale->void_reason = $data['reason'];
         $sale->save();
+
+        $this->kitchen->voidForSale($sale);
 
         return $this->success($sale->load('items', 'customer', 'table'), 'Order cancelled');
     }

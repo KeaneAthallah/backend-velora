@@ -15,7 +15,7 @@ Base URL: `/api/v1`
 Protected endpoints require `Authorization: Bearer <token>`. Tenant context resolved via `X-Business-Id` and optional `X-Outlet-Id` headers (or `business_id`/`outlet_id` body params). Platform admins may access any business.
 
 ## Modules
-Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Payments (create/refund), Refunds (approve/reject), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
+Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payments (create/refund), Refunds (approve/reject), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
 
 ## Menu, modifiers, and availability
 All paths require tenant context. Permissions: `menu.view`, `menu.manage`, `menu.availability`, `menu.dayparts`.
@@ -79,6 +79,20 @@ Areas group tables inside an outlet. Each table keeps a manual status (`availabl
 - GET/POST `/floor-areas`, PUT/DELETE `/floor-areas/{area}` — `{ name, sort_order? }`, unique per outlet. Deleting an area that still holds tables returns `422 TABLE_ERROR`.
 
 Assign a table by sending `table_id` on `POST /orders`, `PUT /orders/{sale}` or `POST /sales` together with `order_type = dine_in`. A table can hold one open order at a time (`422 TABLE_ERROR`); a table from another outlet or business is a 404; switching an order away from dine-in clears `table_id`. Tables expose `table_id` and the nested `table` object on orders and sales.
+
+## Kitchen display and ticket printing
+Permissions: `kitchen.view`, `kitchen.manage`, `kitchen.print`.
+
+A station is a prep point (grill, bar, pastry) inside one outlet. Each station owns a set of categories, so firing an order routes every line to the station that cooks it; unrouted lines fall back to the outlet's default station, and an outlet with no stations simply fires orders without tickets.
+
+- GET `/kitchen/stations?outlet_id=…&include_inactive=1` — stations ordered by `sort_order`, each with `name`, `code`, `kind` (`kitchen | bar | pastry | cold | expediter`), printer settings (`printer_name`, `printer_target`, `copies`, `auto_print`), `is_default`, `is_active`, and `categories[]`.
+- POST `/kitchen/stations` — `{ name, code?, kind?, category_ids?, printer_name?, printer_target?, copies?, auto_print?, is_default?, is_active?, sort_order? }`. `name` and `code` are unique per outlet; `code` is derived from the name when omitted. Setting `is_default` clears the previous default in that outlet.
+- PUT `/kitchen/stations/{station}` — partial update, same fields; omitting `category_ids` keeps the current routing. DELETE is blocked once the station has tickets (`422 KITCHEN_ERROR`) — deactivate it instead.
+- GET `/kitchen/tickets?outlet_id=…&station_id=…&status=active|queued|preparing|ready|served|voided|all` — `{ tickets[], counts{} }`, oldest first, capped at 200. Each ticket carries `ticket_number`, `status`, `items[]` (`sale_item_id`, `name`, `quantity`, `notes`, `modifiers[]`), `note`, print fields, timestamps, the nested `station` and `sale` (`order_number`, `order_type`, `order_status`, `table`, `notes`).
+- POST `/kitchen/tickets/{ticket}/status` — `{ status: preparing|ready|served }`, forward only (`422 KITCHEN_ERROR`); repeating the current status is a no-op. Voided tickets reject every change.
+- GET `/kitchen/tickets/{ticket}/print` — the ticket payload plus `text`, a 42-column plain-text ticket for a thermal printer or browser print. POST `/kitchen/tickets/{ticket}/printed` stamps `printed_at` and increments `print_count`.
+
+Tickets are created the first time an order is fired (`order_status = in_kitchen`) and are never duplicated. Ticket numbers are per outlet and business day: `{OUTLETCODE}-K-{YYYYMMDD}-{seq:03}`. When every ticket for an order is `ready`, the order follows to `ready`; when all are `served`, it follows to `served`. Moving the order from the order board cascades the same way, and cancelling the order voids its tickets.
 
 ## Response format
 Success: `{ "success": true, "message": "...", "data": {}, "meta": {} }`

@@ -124,6 +124,16 @@ Route::prefix('v1')->group(function () {
             Route::put('floor-areas/{area}', [\App\Http\Controllers\Api\V1\TableController::class, 'updateArea']);
             Route::delete('floor-areas/{area}', [\App\Http\Controllers\Api\V1\TableController::class, 'destroyArea']);
 
+            // kitchen display + ticket printing
+            Route::get('kitchen/stations', [\App\Http\Controllers\Api\V1\KitchenController::class, 'stations']);
+            Route::post('kitchen/stations', [\App\Http\Controllers\Api\V1\KitchenController::class, 'storeStation']);
+            Route::put('kitchen/stations/{station}', [\App\Http\Controllers\Api\V1\KitchenController::class, 'updateStation']);
+            Route::delete('kitchen/stations/{station}', [\App\Http\Controllers\Api\V1\KitchenController::class, 'destroyStation']);
+            Route::get('kitchen/tickets', [\App\Http\Controllers\Api\V1\KitchenController::class, 'tickets']);
+            Route::post('kitchen/tickets/{ticket}/status', [\App\Http\Controllers\Api\V1\KitchenController::class, 'ticketStatus']);
+            Route::get('kitchen/tickets/{ticket}/print', [\App\Http\Controllers\Api\V1\KitchenController::class, 'printTicket']);
+            Route::post('kitchen/tickets/{ticket}/printed', [\App\Http\Controllers\Api\V1\KitchenController::class, 'markPrinted']);
+
             // refunds
             Route::get('refunds', [\App\Http\Controllers\Api\V1\RefundController::class, 'index']);
             Route::post('refunds/{refund}/approve', [\App\Http\Controllers\Api\V1\RefundController::class, 'approve']);
