@@ -24,6 +24,17 @@ test('unauthenticated access rejected', function () {
     $this->getJson('/api/v1/me')->assertStatus(401);
 });
 
+test('a guest without a JSON accept header still gets the 401 envelope', function () {
+    // A client that forgets Accept: application/json must not be sent to a
+    // login redirect (there is no such route) or a 500.
+    $res = $this->get('/api/v1/me', ['Accept' => '*/*']);
+
+    $res->assertStatus(401)
+        ->assertHeader('content-type', 'application/json')
+        ->assertJsonPath('success', false)
+        ->assertJsonPath('code', 'UNAUTHENTICATED');
+});
+
 test('business A cannot access business B', function () {
     $u1 = User::factory()->create();
     Sanctum::actingAs($u1);

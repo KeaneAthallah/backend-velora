@@ -13,6 +13,11 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // This backend has no login route: a guest is never redirected to an
+        // HTML page, so unauthenticated requests reach the JSON 401 envelope
+        // below whatever Accept header they send.
+        $middleware->redirectGuestsTo(fn () => null);
+
         $middleware->alias([
             'tenant' => \App\Http\Middleware\ResolveTenant::class,
             'auth.sanctum' => \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
