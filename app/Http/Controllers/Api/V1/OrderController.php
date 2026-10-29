@@ -410,7 +410,23 @@ class OrderController extends Controller
         }
 
         try {
-            DB::transaction(function () use ($sale, $data, $request) {
+            DB::transaction(function () use ($sale, $data, $request, $businessId) {
+                // Lock the order so concurrent checkouts cannot deduct stock
+                // and record payments twice.
+                $locked = Sale::whereKey($sale->id)
+                    ->where('business_id', $businessId)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+                if (! $locked->isOpenOrder()) {
+                    throw new \RuntimeException('Only open orders can be checked out');
+                }
+                $locked->unsetRelation('items');
+                $locked->load('items');
+                if ($locked->items->isEmpty()) {
+                    throw new \RuntimeException('Add at least one item before checkout');
+                }
+                $sale = $locked;
+
                 if (array_key_exists('customer_id', $data)) {
                     $sale->customer_id = $data['customer_id'];
                     $sale->save();
@@ -489,17 +505,32 @@ class OrderController extends Controller
 
         $data = $request->validate(['reason' => 'required|string|max:500']);
 
-        $sale->status = 'voided';
-        $sale->order_status = 'cancelled';
-        $sale->voided_at = now();
-        $sale->voided_by = $request->user()->id;
-        $sale->void_reason = $data['reason'];
-        $sale->save();
+        try {
+            DB::transaction(function () use ($sale, $data, $request, $businessId) {
+                $locked = Sale::whereKey($sale->id)
+                    ->where('business_id', $businessId)
+                    ->lockForUpdate()
+                    ->firstOrFail();
 
-        $this->kitchen->voidForSale($sale);
-        $this->channels->syncOrderStatus($sale, 'cancelled');
+                if (! $locked->isOpenOrder()) {
+                    throw new \RuntimeException('Only open orders can be cancelled');
+                }
 
-        return $this->success($sale->load('items', 'customer', 'table', 'salesChannel'), 'Order cancelled');
+                $locked->status = 'voided';
+                $locked->order_status = 'cancelled';
+                $locked->voided_at = now();
+                $locked->voided_by = $request->user()->id;
+                $locked->void_reason = $data['reason'];
+                $locked->save();
+
+                $this->kitchen->voidForSale($locked);
+                $this->channels->syncOrderStatus($locked, 'cancelled');
+            });
+        } catch (\RuntimeException $e) {
+            return $this->error($e->getMessage(), 422, [], 'ORDER_ERROR');
+        }
+
+        return $this->success($sale->fresh()->load('items', 'customer', 'table', 'salesChannel'), 'Order cancelled');
     }
 
     /**

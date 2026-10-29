@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\Payment;
 use App\Models\Refund;
+use App\Models\Sale;
 use App\Services\AuthorizationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -50,31 +52,50 @@ class RefundController extends Controller
             return $this->error('This refund is not pending', 422, [], 'REFUND_ERROR');
         }
 
-        DB::transaction(function () use ($refund, $request) {
-            $refund->status = 'completed';
-            $refund->approved_by = $request->user()->id;
-            $refund->approved_at = now();
-            $refund->completed_at = now();
-            $refund->save();
+        try {
+            DB::transaction(function () use ($refund, $request, $businessId) {
+                // Lock the refund so a double-click cannot approve it twice and
+                // recompute payment/sale status from a half-applied ledger.
+                $locked = Refund::whereKey($refund->id)
+                    ->where('business_id', $businessId)
+                    ->lockForUpdate()
+                    ->firstOrFail();
 
-            if ($refund->payment) {
-                $payment = $refund->payment;
-                $totalRefunded = $this->refundedTotal('payment_id', $payment->id);
-                $payment->status = bccomp($totalRefunded, bcadd((string) $payment->amount, '0', 4), 4) >= 0
-                    ? 'refunded'
-                    : 'partially_refunded';
-                $payment->save();
-            }
+                if ($locked->status !== 'pending') {
+                    throw new \RuntimeException('This refund is not pending');
+                }
 
-            $sale = $refund->sale;
-            if ($sale) {
-                $totalRefunded = $this->refundedTotal('sale_id', $sale->id);
-                $sale->status = bccomp($totalRefunded, bcadd((string) $sale->total, '0', 4), 4) >= 0
-                    ? 'refunded'
-                    : 'partially_refunded';
-                $sale->save();
-            }
-        });
+                $locked->status = 'completed';
+                $locked->approved_by = $request->user()->id;
+                $locked->approved_at = now();
+                $locked->completed_at = now();
+                $locked->save();
+
+                if ($locked->payment_id) {
+                    $payment = Payment::whereKey($locked->payment_id)->lockForUpdate()->first();
+                    if ($payment) {
+                        $totalRefunded = $this->refundedTotal('payment_id', $payment->id);
+                        $payment->status = bccomp($totalRefunded, bcadd((string) $payment->amount, '0', 4), 4) >= 0
+                            ? 'refunded'
+                            : 'partially_refunded';
+                        $payment->save();
+                    }
+                }
+
+                if ($locked->sale_id) {
+                    $sale = Sale::whereKey($locked->sale_id)->lockForUpdate()->first();
+                    if ($sale) {
+                        $totalRefunded = $this->refundedTotal('sale_id', $sale->id);
+                        $sale->status = bccomp($totalRefunded, bcadd((string) $sale->total, '0', 4), 4) >= 0
+                            ? 'refunded'
+                            : 'partially_refunded';
+                        $sale->save();
+                    }
+                }
+            });
+        } catch (\RuntimeException $e) {
+            return $this->error($e->getMessage(), 422, [], 'REFUND_ERROR');
+        }
 
         return $this->success($refund->fresh()->load('sale', 'payment'), 'Refund approved');
     }

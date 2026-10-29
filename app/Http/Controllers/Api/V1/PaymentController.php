@@ -9,6 +9,7 @@ use App\Models\Sale;
 use App\Services\AuthorizationService;
 use App\Services\PaymentService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 class PaymentController extends Controller
@@ -104,30 +105,44 @@ class PaymentController extends Controller
             'reason' => 'nullable|string|max:500',
         ]);
 
-        if (in_array($payment->status, ['refunded', 'failed'], true)) {
-            return $this->error('This payment cannot be refunded', 422, [], 'REFUND_ERROR');
-        }
-
         $amount = bcadd((string) $data['amount'], '0', 4);
-        $reserved = Refund::where('payment_id', $payment->id)
-            ->whereIn('status', ['pending', 'approved', 'completed'])
-            ->pluck('amount')
-            ->reduce(fn (string $carry, mixed $value) => bcadd($carry, bcadd((string) $value, '0', 4), 4), '0.0000');
-        $refundable = bcsub(bcadd((string) $payment->amount, '0', 4), $reserved, 4);
 
-        if (bccomp($amount, $refundable, 4) > 0) {
-            return $this->error('Refund exceeds the refundable amount', 422, [], 'REFUND_ERROR');
+        try {
+            $refund = DB::transaction(function () use ($payment, $businessId, $amount, $data, $request) {
+                // Lock the payment so two refund requests cannot both count the
+                // same remaining refundable balance and over-refund it.
+                $locked = Payment::whereKey($payment->id)
+                    ->where('business_id', $businessId)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if (in_array($locked->status, ['refunded', 'failed'], true)) {
+                    throw new RuntimeException('This payment cannot be refunded');
+                }
+
+                $reserved = Refund::where('payment_id', $locked->id)
+                    ->whereIn('status', ['pending', 'approved', 'completed'])
+                    ->pluck('amount')
+                    ->reduce(fn (string $carry, mixed $value) => bcadd($carry, bcadd((string) $value, '0', 4), 4), '0.0000');
+                $refundable = bcsub(bcadd((string) $locked->amount, '0', 4), $reserved, 4);
+
+                if (bccomp($amount, $refundable, 4) > 0) {
+                    throw new RuntimeException('Refund exceeds the refundable amount');
+                }
+
+                return Refund::create([
+                    'business_id' => $businessId,
+                    'sale_id' => $locked->sale_id,
+                    'payment_id' => $locked->id,
+                    'amount' => $amount,
+                    'reason' => $data['reason'] ?? null,
+                    'status' => 'pending',
+                    'requested_by' => $request->user()->id,
+                ]);
+            });
+        } catch (RuntimeException $e) {
+            return $this->error($e->getMessage(), 422, [], 'REFUND_ERROR');
         }
-
-        $refund = Refund::create([
-            'business_id' => $businessId,
-            'sale_id' => $payment->sale_id,
-            'payment_id' => $payment->id,
-            'amount' => $amount,
-            'reason' => $data['reason'] ?? null,
-            'status' => 'pending',
-            'requested_by' => $request->user()->id,
-        ]);
 
         return $this->success($refund->load('sale', 'payment'), 'Refund requested', 201);
     }

@@ -18,8 +18,10 @@ use App\Services\PaymentService;
 use App\Services\PromotionService;
 use App\Services\RecipeService;
 use App\Services\SaleService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class SaleController extends Controller
 {
@@ -93,10 +95,26 @@ class SaleController extends Controller
 
         $data = $request->validate([
             'customer_id' => 'nullable|integer|exists:customers,id',
-            'device_id' => 'nullable|integer',
-            'shift_id' => 'nullable|integer',
+            'device_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('devices', 'id')
+                    ->where('business_id', $businessId)
+                    ->where('outlet_id', $outletId),
+            ],
+            'shift_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('register_shifts', 'id')
+                    ->where('business_id', $businessId)
+                    ->where('outlet_id', $outletId),
+            ],
             'table_id' => 'nullable|integer',
-            'tax_rate_id' => 'nullable|integer',
+            'tax_rate_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('tax_rates', 'id')->where('business_id', $businessId),
+            ],
             'promotion_code' => 'nullable|string|max:64',
             'redeem_points' => 'nullable|numeric|min:0',
             'idempotency_key' => 'nullable|string|max:128',
@@ -231,6 +249,21 @@ class SaleController extends Controller
             });
         } catch (\RuntimeException $e) {
             return $this->error($e->getMessage(), 422, [], 'SALE_ERROR');
+        } catch (QueryException $e) {
+            // Two submissions with the same idempotency key can pass the
+            // pre-check together. The unique (business_id, idempotency_key)
+            // index lets only one insert win; return the winner instead of a
+            // 500 so a retried checkout is safe.
+            if (! empty($data['idempotency_key'])) {
+                $existing = Sale::where('business_id', $businessId)
+                    ->where('idempotency_key', $data['idempotency_key'])
+                    ->first();
+                if ($existing) {
+                    return $this->success($existing->load('items', 'payments'), 'Sale already exists (idempotent)');
+                }
+            }
+
+            throw $e;
         }
 
         return $this->success($sale->load('items', 'payments', 'table'), 'Sale completed', 201);
@@ -247,54 +280,72 @@ class SaleController extends Controller
             return $this->error('Only completed sales can be voided', 422);
         }
         $data = $request->validate(['reason' => 'required|string']);
-        DB::transaction(function () use ($sale, $data, $request, $businessId) {
-            // restore inventory
-            foreach ($sale->items as $item) {
-                $product = Product::find($item->product_id);
-                if ($product && $product->track_inventory) {
-                    $bal = InventoryBalance::lockForUpdate()->firstOrCreate(
-                        ['outlet_id' => $sale->outlet_id, 'product_id' => $item->product_id, 'product_variant_id' => $item->product_variant_id],
-                        ['business_id' => $businessId, 'quantity' => 0, 'reserved_quantity' => 0]
-                    );
-                    $bal->quantity = bcadd((string) $bal->quantity, (string) $item->quantity, 4);
-                    $bal->save();
-                    InventoryMovement::create([
-                        'business_id' => $businessId,
-                        'outlet_id' => $sale->outlet_id,
-                        'product_id' => $item->product_id,
-                        'product_variant_id' => $item->product_variant_id,
-                        'type' => 'void',
-                        'quantity' => $item->quantity,
-                        'balance_after' => $bal->quantity,
-                        'reference_type' => 'sale',
-                        'reference_id' => $sale->id,
-                        'reason' => $data['reason'],
-                        'actor_id' => $request->user()->id,
-                    ]);
+
+        try {
+            DB::transaction(function () use ($sale, $data, $request, $businessId) {
+                // Lock the sale before restoring stock: two concurrent voids
+                // must not both pass the status check and restore twice.
+                $locked = Sale::whereKey($sale->id)
+                    ->where('business_id', $businessId)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if ($locked->status !== 'completed') {
+                    throw new \RuntimeException('Only completed sales can be voided');
                 }
-            }
-            $sale->status = 'voided';
-            $sale->order_status = 'cancelled';
-            $sale->voided_at = now();
-            $sale->voided_by = $request->user()->id;
-            $sale->void_reason = $data['reason'];
-            $sale->save();
 
-            // Voiding hands the money back, so completed payments leave the
-            // paid ledger rather than lingering as collected revenue.
-            Payment::where('sale_id', $sale->id)
-                ->where('status', 'completed')
-                ->update(['status' => 'refunded']);
+                $locked->load('items');
 
-            $this->recipeService->reverseForSale($sale, $data['reason'], $request->user()->id);
+                // restore inventory
+                foreach ($locked->items as $item) {
+                    $product = Product::find($item->product_id);
+                    if ($product && $product->track_inventory) {
+                        $bal = InventoryBalance::lockForUpdate()->firstOrCreate(
+                            ['outlet_id' => $locked->outlet_id, 'product_id' => $item->product_id, 'product_variant_id' => $item->product_variant_id],
+                            ['business_id' => $businessId, 'quantity' => 0, 'reserved_quantity' => 0]
+                        );
+                        $bal->quantity = bcadd((string) $bal->quantity, (string) $item->quantity, 4);
+                        $bal->save();
+                        InventoryMovement::create([
+                            'business_id' => $businessId,
+                            'outlet_id' => $locked->outlet_id,
+                            'product_id' => $item->product_id,
+                            'product_variant_id' => $item->product_variant_id,
+                            'type' => 'void',
+                            'quantity' => $item->quantity,
+                            'balance_after' => $bal->quantity,
+                            'reference_type' => 'sale',
+                            'reference_id' => $locked->id,
+                            'reason' => $data['reason'],
+                            'actor_id' => $request->user()->id,
+                        ]);
+                    }
+                }
+                $locked->status = 'voided';
+                $locked->order_status = 'cancelled';
+                $locked->voided_at = now();
+                $locked->voided_by = $request->user()->id;
+                $locked->void_reason = $data['reason'];
+                $locked->save();
 
-            // Give the promotion usage back and put loyalty points where they were.
-            $this->promotions->releaseRedemption($sale);
-            $this->loyalty->reverseForSale($sale, $data['reason']);
-            $this->channels->syncOrderStatus($sale, 'cancelled');
-        });
+                // Voiding hands the money back, so completed payments leave the
+                // paid ledger rather than lingering as collected revenue.
+                Payment::where('sale_id', $locked->id)
+                    ->where('status', 'completed')
+                    ->update(['status' => 'refunded']);
 
-        return $this->success($sale, 'Voided');
+                $this->recipeService->reverseForSale($locked, $data['reason'], $request->user()->id);
+
+                // Give the promotion usage back and put loyalty points where they were.
+                $this->promotions->releaseRedemption($locked);
+                $this->loyalty->reverseForSale($locked, $data['reason']);
+                $this->channels->syncOrderStatus($locked, 'cancelled');
+            });
+        } catch (\RuntimeException $e) {
+            return $this->error($e->getMessage(), 422, [], 'SALE_ERROR');
+        }
+
+        return $this->success($sale->fresh()->load('items', 'payments'), 'Voided');
     }
 
     public function receipt(Request $request, Sale $sale)

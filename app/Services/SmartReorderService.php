@@ -5,19 +5,13 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\Ingredient;
-use App\Models\IngredientConsumptionForecast;
-use App\Models\IngredientDemandForecast;
-use App\Models\IngredientForecastRule;
 use App\Models\IngredientPhotoAndUsePattern;
 use App\Models\IngredientRecipeRelation;
+use App\Models\Product;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\PurchaseOrderItemApproval;
-use App\Models\PurchaseOrderItemCostOverride;
-use App\Models\PurchaseOrderItemSuggestedSupplier;
 use App\Models\PurchaseOrderItemSuggestedSupplierParcel;
-use App\Models\Product;
-use App\Services\AuthorizationService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -182,7 +176,7 @@ final class SmartReorderService
 
         foreach ($selections as $selection) {
             $ingredient = Ingredient::forBusiness($businessId)->findOrFail((int) $selection['ingredientId']);
-            $parcel = $this->preferredParcel($ingredient, $selection, $suggestedParcelsByProduct: $forecast['suggestedParcelsByProduct']);
+            $parcel = $this->preferredParcel($ingredient, $selection, $forecast['suggestedParcelsByProduct']);
             $item = PurchaseOrderItem::create([
                 'purchase_order_id' => $purchaseOrder->id,
                 'product_id' => (int) $ingredient->product_id,
@@ -330,14 +324,16 @@ final class SmartReorderService
             'blindSpot' => null,
         ];
 
-        if (!$data['trackInventory']) {
+        if (! $data['trackInventory']) {
             $forecast['blindSpot'] = 'Ingredient is not tracked in inventory; enable tracking to receive reorder suggestions.';
+
             return $forecast;
         }
 
         if ($data['currentStock'] <= 0.0) {
             $forecast['reorderReason'] = 'Out of stock — suggest reorder immediately.';
             $forecast['predictedStockAtReorderDate'] = 0.0;
+
             return $forecast;
         }
 
@@ -362,6 +358,7 @@ final class SmartReorderService
 
         if ($method === 'none') {
             $forecast['blindSpot'] = 'No sales-driven or photo-driven demand signal; refine recipes or photo patterns to forecast this ingredient.';
+
             return $forecast;
         }
 
@@ -424,7 +421,7 @@ final class SmartReorderService
         }
 
         $best = $patterns->sortByDesc(fn (IngredientPhotoAndUsePattern $p): float => $p->consumption_rate)->first();
-        if (!$best instanceof IngredientPhotoAndUsePattern) {
+        if (! $best instanceof IngredientPhotoAndUsePattern) {
             return null;
         }
 
@@ -475,6 +472,7 @@ final class SmartReorderService
         if ($data['currentStock'] < $targetStock) {
             return 'Forecasted demand before the next delivery will dip below comfort level.';
         }
+
         return 'Projected to stay above comfort level until the next delivery.';
     }
 
@@ -516,7 +514,7 @@ final class SmartReorderService
         }
 
         $best = $patterns->sortByDesc(fn (IngredientPhotoAndUsePattern $p): float => $p->consumption_rate)->first();
-        if (!$best instanceof IngredientPhotoAndUsePattern) {
+        if (! $best instanceof IngredientPhotoAndUsePattern) {
             return null;
         }
 
@@ -542,7 +540,7 @@ final class SmartReorderService
             return (int) $ingredient->lead_time_days;
         }
 
-        if (!empty($parcelCandidates)) {
+        if (! empty($parcelCandidates)) {
             $bestSupplierParcel = collect($parcelCandidates)
                 ->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
                 ->first();
@@ -564,6 +562,7 @@ final class SmartReorderService
                 $leadTimeDays = max($leadTimeDays, (int) $ingredient->lead_time_days);
             }
         }
+
         return $leadTimeDays;
     }
 
@@ -605,8 +604,7 @@ final class SmartReorderService
         array $suggestedParcelsByProduct,
     ): array {
         $candidates = collect($forecast['ingredients'])
-            ->filter(fn (array $ing): bool =>
-                $ing['isTracked']
+            ->filter(fn (array $ing): bool => $ing['isTracked']
                 && $ing['forecast']['method'] !== 'none'
                 && $ing['forecast']['reorderQuantity'] > 0.0
             )
@@ -662,14 +660,14 @@ final class SmartReorderService
     private function preferredParcelFromForecast(array $ingredient, array $suggestedParcelsByProduct): ?array
     {
         $photoPattern = $ingredient['photoPattern'];
-        if ($photoPattern && !empty($photoPattern['suggestedParcels'])) {
+        if ($photoPattern && ! empty($photoPattern['suggestedParcels'])) {
             return collect($photoPattern['suggestedParcels'])
                 ->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
                 ->first();
         }
 
         $productId = (int) $ingredient['id'];
-        if (isset($suggestedParcelsByProduct[$productId]) && !empty($suggestedParcelsByProduct[$productId])) {
+        if (isset($suggestedParcelsByProduct[$productId]) && ! empty($suggestedParcelsByProduct[$productId])) {
             return collect($suggestedParcelsByProduct[$productId])
                 ->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
                 ->first();
@@ -681,7 +679,7 @@ final class SmartReorderService
     private function preferredParcel(Ingredient $ingredient, array $selection, array $suggestedParcelsByProduct): array
     {
         $photoPattern = $this->photoPattern($ingredient->photoAndUsePatterns);
-        if ($photoPattern && !empty($photoPattern['suggestedParcels'])) {
+        if ($photoPattern && ! empty($photoPattern['suggestedParcels'])) {
             $best = collect($photoPattern['suggestedParcels'])
                 ->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
                 ->first();
@@ -691,7 +689,7 @@ final class SmartReorderService
         }
 
         $productId = (int) $ingredient->product_id;
-        if (isset($suggestedParcelsByProduct[$productId]) && !empty($suggestedParcelsByProduct[$productId])) {
+        if (isset($suggestedParcelsByProduct[$productId]) && ! empty($suggestedParcelsByProduct[$productId])) {
             return collect($suggestedParcelsByProduct[$productId])
                 ->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
                 ->first();
@@ -734,16 +732,15 @@ final class SmartReorderService
             ->get();
 
         return $parcels->groupBy(fn (PurchaseOrderItemSuggestedSupplierParcel $parcel): int => $parcel->product_id)
-            ->map(fn (Collection $parcels, int $productId): array =>
-                $parcels->map(fn (PurchaseOrderItemSuggestedSupplierParcel $parcel): array => [
-                    'parcelQuantity' => $parcel->parcel_quantity,
-                    'parcelCost' => $parcel->parcel_cost,
-                    'supplierId' => (string) $parcel->supplier_id,
-                    'supplierName' => $parcel->supplier?->name,
-                    'supplierLeadTimeDays' => $parcel->supplier?->lead_time_days ?? null,
-                ])->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
-                    ->values()
-                    ->all()
+            ->map(fn (Collection $parcels, int $productId): array => $parcels->map(fn (PurchaseOrderItemSuggestedSupplierParcel $parcel): array => [
+                'parcelQuantity' => $parcel->parcel_quantity,
+                'parcelCost' => $parcel->parcel_cost,
+                'supplierId' => (string) $parcel->supplier_id,
+                'supplierName' => $parcel->supplier?->name,
+                'supplierLeadTimeDays' => $parcel->supplier?->lead_time_days ?? null,
+            ])->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
+                ->values()
+                ->all()
             )
             ->all();
     }

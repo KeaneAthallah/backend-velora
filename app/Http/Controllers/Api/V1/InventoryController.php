@@ -5,10 +5,12 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\InventoryBalance;
 use App\Models\InventoryMovement;
-use App\Models\Product;
+use App\Models\Outlet;
+use App\Models\ProductVariant;
 use App\Services\AuthorizationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class InventoryController extends Controller
 {
@@ -20,7 +22,10 @@ class InventoryController extends Controller
         $outletId = $request->attributes->get('outlet_id') ?? $request->input('outlet_id');
         $this->authz->requirePermission($request->user(), 'inventory.view', $businessId);
         $q = InventoryBalance::where('business_id', $businessId)->with('product', 'variant');
-        if ($outletId) $q->where('outlet_id', $outletId);
+        if ($outletId) {
+            $q->where('outlet_id', $outletId);
+        }
+
         return $this->success($q->paginate(100));
     }
 
@@ -29,14 +34,39 @@ class InventoryController extends Controller
         $businessId = $request->attributes->get('business_id');
         $outletId = $request->attributes->get('outlet_id') ?? $request->input('outlet_id');
         $this->authz->requirePermission($request->user(), 'inventory.adjust', $businessId);
+        if (! $outletId) {
+            return $this->error('Outlet required', 422);
+        }
+
         $data = $request->validate([
-            'product_id' => 'required|integer|exists:products,id',
+            'product_id' => [
+                'required',
+                'integer',
+                Rule::exists('products', 'id')
+                    ->where('business_id', $businessId)
+                    ->whereNull('deleted_at'),
+            ],
             'product_variant_id' => 'nullable|integer',
             'quantity' => 'required|numeric',
             'reason' => 'required|string|max:255',
             'type' => 'sometimes|in:adjustment,damaged,missing,expired,write_off',
         ]);
-        if (! $outletId) return $this->error('Outlet required', 422);
+
+        // Never trust an outlet id taken from the body: it must belong to the
+        // active business before we write a balance/movement against it.
+        if (! Outlet::where('id', $outletId)->where('business_id', $businessId)->exists()) {
+            return $this->error('Not found', 404);
+        }
+
+        if (! empty($data['product_variant_id'])) {
+            $variantMatches = ProductVariant::where('id', $data['product_variant_id'])
+                ->where('product_id', $data['product_id'])
+                ->exists();
+            if (! $variantMatches) {
+                return $this->error('Not found', 404);
+            }
+        }
+
         $type = $data['type'] ?? 'adjustment';
         DB::transaction(function () use ($businessId, $outletId, $data, $type, $request) {
             $balance = InventoryBalance::lockForUpdate()->firstOrCreate(
@@ -57,6 +87,7 @@ class InventoryController extends Controller
                 'actor_id' => $request->user()->id,
             ]);
         });
+
         return $this->success(null, 'Adjusted');
     }
 
@@ -66,8 +97,13 @@ class InventoryController extends Controller
         $outletId = $request->attributes->get('outlet_id') ?? $request->input('outlet_id');
         $this->authz->requirePermission($request->user(), 'inventory.view', $businessId);
         $q = InventoryMovement::where('business_id', $businessId)->with('product');
-        if ($outletId) $q->where('outlet_id', $outletId);
-        if ($request->filled('product_id')) $q->where('product_id', $request->input('product_id'));
+        if ($outletId) {
+            $q->where('outlet_id', $outletId);
+        }
+        if ($request->filled('product_id')) {
+            $q->where('product_id', $request->input('product_id'));
+        }
+
         return $this->success($q->orderByDesc('id')->paginate(100));
     }
 }

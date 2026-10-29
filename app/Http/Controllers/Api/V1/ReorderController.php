@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Services\AuthorizationService;
 use App\Services\SmartReorderService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,10 +15,41 @@ final class ReorderController extends Controller
 {
     public function __construct(
         private readonly SmartReorderService $smartReorder,
+        private readonly AuthorizationService $authz,
     ) {}
+
+    /**
+     * The reorder copilot is scaffolded ahead of its data layer: its forecast
+     * tables and several models do not exist yet. Until those ship, the
+     * endpoints must not throw a 500. They enforce RBAC and then report that
+     * the feature is unavailable.
+     */
+    private function reorderAvailable(): bool
+    {
+        return (bool) config('features.reorder_copilot', false);
+    }
+
+    private function notImplemented(Request $request): JsonResponse
+    {
+        $this->authz->requirePermission(
+            $request->user(),
+            'purchasing.manage',
+            (int) $request->attributes->get('business_id'),
+        );
+
+        return response()->json([
+            'success' => false,
+            'message' => 'The reorder copilot is not available yet.',
+            'code' => 'NOT_IMPLEMENTED',
+        ], 501);
+    }
 
     public function forecast(Request $request): JsonResponse
     {
+        if (! $this->reorderAvailable()) {
+            return $this->notImplemented($request);
+        }
+
         $params = Validator::validate($request->all(), [
             'from' => 'nullable|date|before_or_equal:until|after:now',
             'until' => 'nullable|date|after_or_equal:from|before_or_equal:now',
@@ -38,6 +70,10 @@ final class ReorderController extends Controller
 
     public function suggest(Request $request): JsonResponse
     {
+        if (! $this->reorderAvailable()) {
+            return $this->notImplemented($request);
+        }
+
         $params = Validator::validate($request->all(), [
             'from' => 'nullable|date|before_or_equal:until|after:now',
             'until' => 'nullable|date|after_or_equal:from|before_or_equal:now',
@@ -66,6 +102,10 @@ final class ReorderController extends Controller
 
     public function approve(Request $request, int $purchaseOrderItemId): JsonResponse
     {
+        if (! $this->reorderAvailable()) {
+            return $this->notImplemented($request);
+        }
+
         $params = Validator::validate($request->all(), [
             'quantity' => 'nullable|numeric|min:0',
             'cost_per_unit' => 'nullable|numeric|min:0',
@@ -96,6 +136,10 @@ final class ReorderController extends Controller
 
     public function reject(Request $request, int $purchaseOrderItemId): JsonResponse
     {
+        if (! $this->reorderAvailable()) {
+            return $this->notImplemented($request);
+        }
+
         $item = $this->smartReorder->rejectItem(
             (int) $request->attributes->get('business_id'),
             $purchaseOrderItemId,
