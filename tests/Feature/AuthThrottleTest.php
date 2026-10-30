@@ -15,6 +15,27 @@ test('login is throttled after repeated failed attempts', function () {
         ->assertJsonPath('success', false);
 });
 
+test('registration is throttled', function () {
+    $payload = [
+        'name' => 'Throttled Owner',
+        'email' => 'throttled@example.com',
+        'password' => 'password-123',
+        'password_confirmation' => 'password-123',
+    ];
+
+    for ($attempt = 1; $attempt <= 10; $attempt++) {
+        // The first attempt creates the account; the rest fail the unique check.
+        $this->withServerVariables(['REMOTE_ADDR' => '10.10.10.12'])
+            ->postJson('/api/v1/auth/register', $payload)
+            ->assertStatus($attempt === 1 ? 201 : 422);
+    }
+
+    $this->withServerVariables(['REMOTE_ADDR' => '10.10.10.12'])
+        ->postJson('/api/v1/auth/register', $payload)
+        ->assertStatus(429)
+        ->assertJsonPath('success', false);
+});
+
 test('forgot password is throttled', function () {
     for ($attempt = 1; $attempt <= 10; $attempt++) {
         $this->withServerVariables(['REMOTE_ADDR' => '10.10.10.11'])

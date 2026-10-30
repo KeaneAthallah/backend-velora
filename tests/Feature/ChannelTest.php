@@ -429,3 +429,22 @@ test('channel events are acknowledged by the connector', function () {
         ->json('data');
     expect($pending['total'])->toBe(0);
 });
+
+test('the public webhook ingress is throttled per channel token', function () {
+    // Unknown token: the limiter runs before the lookup, so the budget is spent
+    // on 404s and the next call is refused without touching the database.
+    for ($attempt = 1; $attempt <= 60; $attempt++) {
+        $this->withServerVariables(['REMOTE_ADDR' => '10.10.10.13'])
+            ->postJson('/api/v1/channel-webhooks/unknown-token-throttle', ['external_order_id' => 'X-1'])
+            ->assertStatus(404);
+    }
+
+    $this->withServerVariables(['REMOTE_ADDR' => '10.10.10.13'])
+        ->postJson('/api/v1/channel-webhooks/unknown-token-throttle', ['external_order_id' => 'X-1'])
+        ->assertStatus(429);
+
+    // A different channel token has its own budget.
+    $this->withServerVariables(['REMOTE_ADDR' => '10.10.10.13'])
+        ->postJson('/api/v1/channel-webhooks/another-token', ['external_order_id' => 'X-2'])
+        ->assertStatus(404);
+});

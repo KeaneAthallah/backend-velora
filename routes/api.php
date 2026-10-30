@@ -45,7 +45,8 @@ Route::prefix('v1')->group(function () {
     // auth
     // Credential and email-sending endpoints are throttled per IP so they
     // cannot be used to brute-force passwords or spam reset mail.
-    Route::post('auth/register', [AuthController::class, 'register']);
+    Route::post('auth/register', [AuthController::class, 'register'])
+        ->middleware('throttle:10,1');
     Route::post('auth/login', [AuthController::class, 'login'])
         ->middleware('throttle:10,1');
     Route::post('auth/forgot-password', [AuthController::class, 'forgotPassword'])
@@ -53,8 +54,10 @@ Route::prefix('v1')->group(function () {
     Route::post('auth/reset-password', [AuthController::class, 'resetPassword'])
         ->middleware('throttle:10,1');
 
-    // public channel partner ingress (signed with the channel secret)
-    Route::post('channel-webhooks/{token}', [ChannelWebhookController::class, 'receive']);
+    // public channel partner ingress (signed with the channel secret), throttled
+    // per channel token so a burst or a replay loop cannot flood order creation
+    Route::post('channel-webhooks/{token}', [ChannelWebhookController::class, 'receive'])
+        ->middleware('throttle:channel-webhook');
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('me', [MeController::class, 'show']);
