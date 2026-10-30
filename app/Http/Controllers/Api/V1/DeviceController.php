@@ -15,6 +15,7 @@ class DeviceController extends Controller
     {
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'devices.view', $businessId);
+
         return $this->success(Device::where('business_id', $businessId)->paginate(50));
     }
 
@@ -29,20 +30,26 @@ class DeviceController extends Controller
             'outlet_id' => 'nullable|integer',
         ]);
         $device = Device::create(array_merge($data, ['business_id' => $businessId, 'status' => 'active']));
+
         return $this->success($device, 'Created', 201);
     }
 
     public function show(Request $request, Device $device)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($device->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($device->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
+
         return $this->success($device);
     }
 
     public function update(Request $request, Device $device)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($device->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($device->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'devices.manage', $businessId);
         $data = $request->validate([
             'name' => 'sometimes|string|max:255',
@@ -50,15 +57,19 @@ class DeviceController extends Controller
             'outlet_id' => 'nullable|integer',
         ]);
         $device->update($data);
+
         return $this->success($device);
     }
 
     public function destroy(Request $request, Device $device)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($device->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($device->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'devices.manage', $businessId);
         $device->delete();
+
         return $this->success(null, 'Deleted');
     }
 }

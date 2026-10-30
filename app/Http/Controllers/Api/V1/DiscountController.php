@@ -14,6 +14,7 @@ class DiscountController extends Controller
     public function index(Request $request)
     {
         $businessId = $request->attributes->get('business_id');
+
         return $this->success(Discount::where('business_id', $businessId)->get());
     }
 
@@ -34,25 +35,32 @@ class DiscountController extends Controller
             'requires_approval' => 'boolean',
         ]);
         $d = Discount::create(array_merge($data, ['business_id' => $businessId]));
+
         return $this->success($d, 'Created', 201);
     }
 
     public function update(Request $request, Discount $discount)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($discount->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($discount->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'settings.manage', $businessId);
         $data = $request->validate(['name' => 'sometimes|string', 'value' => 'sometimes|numeric', 'is_active' => 'boolean']);
         $discount->update($data);
+
         return $this->success($discount);
     }
 
     public function destroy(Request $request, Discount $discount)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($discount->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($discount->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'settings.manage', $businessId);
         $discount->delete();
+
         return $this->success(null, 'Deleted');
     }
 }

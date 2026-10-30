@@ -15,6 +15,7 @@ class OutletController extends Controller
     {
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'outlets.view', $businessId);
+
         return $this->success(Outlet::where('business_id', $businessId)->paginate(50));
     }
 
@@ -32,6 +33,7 @@ class OutletController extends Controller
             'settings' => 'nullable|array',
         ]);
         $outlet = Outlet::create(array_merge($data, ['business_id' => $businessId, 'status' => 'active']));
+
         return $this->success($outlet, 'Outlet created', 201);
     }
 
@@ -42,6 +44,7 @@ class OutletController extends Controller
             return $this->error('Not found', 404);
         }
         $this->authz->requirePermission($request->user(), 'outlets.view', $businessId);
+
         return $this->success($outlet);
     }
 
@@ -63,6 +66,7 @@ class OutletController extends Controller
             'settings' => 'nullable|array',
         ]);
         $outlet->update($data);
+
         return $this->success($outlet);
     }
 
@@ -74,6 +78,7 @@ class OutletController extends Controller
         }
         $this->authz->requirePermission($request->user(), 'outlets.manage', $businessId);
         $outlet->delete();
+
         return $this->success(null, 'Deleted');
     }
 }

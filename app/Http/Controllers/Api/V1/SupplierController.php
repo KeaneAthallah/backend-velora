@@ -15,6 +15,7 @@ class SupplierController extends Controller
     {
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'suppliers.view', $businessId);
+
         return $this->success(Supplier::where('business_id', $businessId)->paginate(50));
     }
 
@@ -31,20 +32,26 @@ class SupplierController extends Controller
             'tax_id' => 'nullable|string|max:64',
         ]);
         $s = Supplier::create(array_merge($data, ['business_id' => $businessId, 'is_active' => true]));
+
         return $this->success($s, 'Created', 201);
     }
 
     public function show(Request $request, Supplier $supplier)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($supplier->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($supplier->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
+
         return $this->success($supplier);
     }
 
     public function update(Request $request, Supplier $supplier)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($supplier->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($supplier->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'suppliers.manage', $businessId);
         $data = $request->validate([
             'name' => 'sometimes|string|max:255',
@@ -55,15 +62,19 @@ class SupplierController extends Controller
             'is_active' => 'boolean',
         ]);
         $supplier->update($data);
+
         return $this->success($supplier);
     }
 
     public function destroy(Request $request, Supplier $supplier)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($supplier->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($supplier->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'suppliers.manage', $businessId);
         $supplier->delete();
+
         return $this->success(null, 'Deleted');
     }
 }

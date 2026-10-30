@@ -2,6 +2,8 @@
 
 namespace App\Traits;
 
+use Illuminate\Support\Str;
+
 trait ApiResponse
 {
     protected function success($data = null, string $message = 'Operation completed successfully', int $status = 200, array $meta = [])
@@ -10,6 +12,7 @@ trait ApiResponse
         if (! empty($meta)) {
             $payload['meta'] = $meta;
         }
+
         return response()->json($payload, $status);
     }
 
@@ -20,7 +23,7 @@ trait ApiResponse
             'message' => $message,
             'errors' => $errors,
             'code' => $code,
-            'request_id' => $requestId ?? (string) \Illuminate\Support\Str::uuid(),
+            'request_id' => $requestId ?? (string) Str::uuid(),
         ], $status);
     }
 }

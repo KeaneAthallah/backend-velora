@@ -4,6 +4,8 @@ namespace App\Http\Middleware;
 
 use App\Models\Business;
 use App\Models\BusinessMembership;
+use App\Models\Outlet;
+use App\Models\OutletMembership;
 use Closure;
 use Illuminate\Http\Request;
 
@@ -30,6 +32,7 @@ class ResolveTenant
             if ($outletId) {
                 $request->attributes->set('outlet_id', (int) $outletId);
             }
+
             return $next($request);
         }
 
@@ -67,7 +70,7 @@ class ResolveTenant
         $outletId = $request->header('X-Outlet-Id') ?? $request->input('outlet_id');
         if ($outletId) {
             // verify outlet belongs to business
-            $outlet = \App\Models\Outlet::where('id', $outletId)->where('business_id', $business->id)->first();
+            $outlet = Outlet::where('id', $outletId)->where('business_id', $business->id)->first();
             if (! $outlet) {
                 return response()->json(['success' => false, 'message' => 'Outlet not found in business', 'code' => 'OUTLET_NOT_FOUND'], 404);
             }
@@ -75,7 +78,7 @@ class ResolveTenant
             $role = $membership->role;
             $isAdmin = $role && in_array($role->slug, ['owner', 'admin']);
             if (! $isAdmin) {
-                $om = \App\Models\OutletMembership::where('user_id', $user->id)->where('outlet_id', $outlet->id)->first();
+                $om = OutletMembership::where('user_id', $user->id)->where('outlet_id', $outlet->id)->first();
                 if (! $om) {
                     return response()->json(['success' => false, 'message' => 'Outlet access denied', 'code' => 'OUTLET_ACCESS_DENIED'], 403);
                 }

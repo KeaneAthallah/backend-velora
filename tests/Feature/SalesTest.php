@@ -16,6 +16,7 @@ function setupBiz($test): array
         dump($productRes->status(), $productRes->json());
     }
     $test->withHeaders(['Authorization' => "Bearer $token", 'X-Business-Id' => $biz['id'], 'X-Outlet-Id' => $outlet['id']])->postJson('/api/v1/inventory/adjust', ['product_id' => $product['id'], 'quantity' => 50, 'reason' => 'init']);
+
     return compact('user', 'token', 'biz', 'outlet', 'product');
 }
 
@@ -27,7 +28,7 @@ test('sale computes totals and decrements stock', function () {
         'items' => [['product_id' => $ctx['product']['id'], 'quantity' => 2]],
     ]);
     $sale->assertStatus(201);
-    expect($sale->json('data.total'))->toBe("20000.0000");
+    expect($sale->json('data.total'))->toBe('20000.0000');
 });
 
 test('idempotent sale', function () {

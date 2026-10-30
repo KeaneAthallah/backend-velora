@@ -20,6 +20,7 @@ class WebhookController extends Controller
                 return $this->success(['status' => 'already_processed']);
             }
         }
+
         return $this->success(['status' => 'received']);
     }
 }

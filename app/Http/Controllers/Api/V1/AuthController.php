@@ -26,6 +26,7 @@ class AuthController extends Controller
             'phone' => $data['phone'] ?? null,
         ]);
         $token = $user->createToken('auth')->plainTextToken;
+
         return $this->success(['user' => $user, 'token' => $token], 'Registered', 201);
     }
 
@@ -43,12 +44,14 @@ class AuthController extends Controller
             return $this->error('Account inactive', 403, [], 'ACCOUNT_INACTIVE');
         }
         $token = $user->createToken('auth')->plainTextToken;
+
         return $this->success(['user' => $user, 'token' => $token]);
     }
 
     public function logout(Request $request)
     {
         $request->user()->currentAccessToken()->delete();
+
         return $this->success(null, 'Logged out');
     }
 
@@ -63,6 +66,7 @@ class AuthController extends Controller
             return $this->error('Current password incorrect', 422, [], 'INVALID_PASSWORD');
         }
         $user->update(['password' => Hash::make($data['password'])]);
+
         return $this->success(null, 'Password changed');
     }
 
@@ -70,6 +74,7 @@ class AuthController extends Controller
     {
         $request->validate(['email' => 'required|email']);
         $status = Password::sendResetLink($request->only('email'));
+
         return $this->success(null, __($status));
     }
 
@@ -86,6 +91,7 @@ class AuthController extends Controller
         if ($status !== Password::PASSWORD_RESET) {
             return $this->error(__($status), 422, [], 'PASSWORD_RESET_FAILED');
         }
+
         return $this->success(null, __($status));
     }
 }

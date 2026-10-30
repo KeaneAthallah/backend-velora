@@ -15,6 +15,7 @@ class AuditLogController extends Controller
     {
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'reports.view', $businessId);
+
         return $this->success(AuditLog::where('business_id', $businessId)->orderByDesc('id')->paginate(100));
     }
 }

@@ -29,6 +29,7 @@ class ProductController extends Controller
         if ($request->filled('is_active')) {
             $q->where('is_active', filter_var($request->input('is_active'), FILTER_VALIDATE_BOOLEAN));
         }
+
         return $this->success($q->paginate((int) $request->input('per_page', 50)));
     }
 
@@ -81,21 +82,27 @@ class ProductController extends Controller
                 ]);
             }
         }
+
         return $this->success($product->load('variants'), 'Created', 201);
     }
 
     public function show(Request $request, Product $product)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($product->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($product->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'products.view', $businessId);
+
         return $this->success($product->load('category', 'variants', 'barcodes', 'outletPrices'));
     }
 
     public function update(Request $request, Product $product)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($product->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($product->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'products.manage', $businessId);
         $data = $request->validate([
             'name' => 'sometimes|string|max:255',
@@ -110,15 +117,19 @@ class ProductController extends Controller
             'attributes' => 'nullable|array',
         ]);
         $product->update($data);
+
         return $this->success($product->load('variants'));
     }
 
     public function destroy(Request $request, Product $product)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($product->business_id !== $businessId) return $this->error('Not found', 404);
+        if ($product->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
         $this->authz->requirePermission($request->user(), 'products.manage', $businessId);
         $product->delete();
+
         return $this->success(null, 'Deleted');
     }
 }
