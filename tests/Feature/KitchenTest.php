@@ -1,7 +1,10 @@
 <?php
 
+use App\Models\Business;
 use App\Models\BusinessMembership;
+use App\Models\Plan;
 use App\Models\Role;
+use App\Models\Subscription;
 use App\Models\User;
 
 function kitchenSetup($test): array
@@ -51,6 +54,12 @@ function kitchenSetup($test): array
         'category_ids' => [$food['id']],
         'is_default' => true,
     ])->json('data');
+
+    // Upgrade subscription in DB to Pro so we can create additional outlets later.
+    $biz = Business::where('name', 'Kitchen Biz')->firstOrFail();
+    $sub = Subscription::where('business_id', $biz->id)->firstOrFail();
+    $proPlan = Plan::where('slug', 'pro')->firstOrFail();
+    $sub->update(['plan_id' => $proPlan->id]);
 
     return compact('user', 'token', 'auth', 'biz', 'bizHeaders', 'outlet', 'headers', 'drinks', 'food', 'latte', 'rice', 'bar', 'grill');
 }

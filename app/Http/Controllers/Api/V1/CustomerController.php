@@ -6,11 +6,15 @@ use App\Http\Controllers\Controller;
 use App\Models\Customer;
 use App\Models\PromotionRedemption;
 use App\Services\AuthorizationService;
+use App\Services\Subscription\SubscriptionService;
 use Illuminate\Http\Request;
 
 class CustomerController extends Controller
 {
-    public function __construct(protected AuthorizationService $authz) {}
+    public function __construct(
+        protected AuthorizationService $authz,
+        protected SubscriptionService $subscriptions,
+    ) {}
 
     public function index(Request $request)
     {
@@ -59,6 +63,7 @@ class CustomerController extends Controller
             'loyalty_number' => 'nullable|string|max:64',
         ]);
 
+        $this->subscriptions->enforceLimit($businessId, 'customers');
         $c = Customer::create(array_merge($data, ['business_id' => $businessId]));
 
         return $this->success($c, 'Created', 201);

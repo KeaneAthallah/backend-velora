@@ -18,6 +18,7 @@ use App\Services\PaymentService;
 use App\Services\PromotionService;
 use App\Services\RecipeService;
 use App\Services\SaleService;
+use App\Services\Subscription\SubscriptionService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -33,6 +34,7 @@ class SaleController extends Controller
         protected PromotionService $promotions,
         protected LoyaltyService $loyalty,
         protected ChannelService $channels,
+        protected SubscriptionService $subscriptions,
     ) {}
 
     public function index(Request $request)
@@ -181,6 +183,11 @@ class SaleController extends Controller
                 return $this->success($existing->load('items', 'payments'), 'Sale already exists (idempotent)');
             }
         }
+
+        // Completed sales count against the monthly transaction quota. The
+        // check runs after the idempotent replay short-circuit so a retry of an
+        // already-recorded sale is never blocked by a full quota.
+        $this->subscriptions->enforceLimit($businessId, 'transactions_per_month');
 
         $outlet = Outlet::where('id', $outletId)->where('business_id', $businessId)->firstOrFail();
 

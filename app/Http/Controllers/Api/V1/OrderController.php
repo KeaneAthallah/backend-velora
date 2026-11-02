@@ -16,6 +16,7 @@ use App\Services\LoyaltyService;
 use App\Services\PaymentService;
 use App\Services\PromotionService;
 use App\Services\SaleService;
+use App\Services\Subscription\SubscriptionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -40,6 +41,7 @@ class OrderController extends Controller
         protected PromotionService $promotions,
         protected LoyaltyService $loyalty,
         protected ChannelService $channels,
+        protected SubscriptionService $subscriptions,
     ) {}
 
     public function index(Request $request)
@@ -408,6 +410,10 @@ class OrderController extends Controller
         if (array_key_exists('customer_id', $data) && ! empty($data['customer_id']) && ! $this->customerBelongsTo($businessId, (int) $data['customer_id'])) {
             return $this->error('Not found', 404);
         }
+
+        // Finalising an open tab creates a completed sale, so it consumes the
+        // same monthly transaction quota as a direct sale.
+        $this->subscriptions->enforceLimit($businessId, 'transactions_per_month');
 
         try {
             DB::transaction(function () use ($sale, $data, $request, $businessId) {

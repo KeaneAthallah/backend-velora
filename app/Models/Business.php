@@ -31,4 +31,24 @@ class Business extends Model
     {
         return $this->hasMany(Role::class);
     }
+
+    public function subscription()
+    {
+        return $this->hasOne(Subscription::class);
+    }
+
+    public function subscriptionInvoices()
+    {
+        return $this->hasMany(SubscriptionInvoice::class);
+    }
+
+    public function subscriptionPayments()
+    {
+        return $this->hasMany(SubscriptionPayment::class);
+    }
+
+    public function subscriptionHistories()
+    {
+        return $this->hasMany(SubscriptionHistory::class);
+    }
 }

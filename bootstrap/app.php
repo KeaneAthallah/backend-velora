@@ -1,5 +1,8 @@
 <?php
 
+use App\Exceptions\SubscriptionException;
+use App\Http\Middleware\EnsureSubscriptionActive;
+use App\Http\Middleware\EnsureSubscriptionFeature;
 use App\Http\Middleware\ResolveTenant;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
@@ -27,6 +30,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'tenant' => ResolveTenant::class,
             'auth.sanctum' => EnsureFrontendRequestsAreStateful::class,
+            'subscription.active' => EnsureSubscriptionActive::class,
+            'subscription.feature' => EnsureSubscriptionFeature::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
@@ -52,6 +57,9 @@ return Application::configure(basePath: dirname(__DIR__))
                         'code' => 'UNAUTHENTICATED',
                         'request_id' => (string) Str::uuid(),
                     ], 401);
+                }
+                if ($e instanceof SubscriptionException) {
+                    return $e->render();
                 }
                 if ($e instanceof HttpException) {
                     $status = $e->getStatusCode();

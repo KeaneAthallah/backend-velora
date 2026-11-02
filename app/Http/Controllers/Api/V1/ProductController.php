@@ -6,11 +6,15 @@ use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Services\AuthorizationService;
+use App\Services\Subscription\SubscriptionService;
 use Illuminate\Http\Request;
 
 class ProductController extends Controller
 {
-    public function __construct(protected AuthorizationService $authz) {}
+    public function __construct(
+        protected AuthorizationService $authz,
+        protected SubscriptionService $subscriptions,
+    ) {}
 
     public function index(Request $request)
     {
@@ -55,6 +59,7 @@ class ProductController extends Controller
             'attributes' => 'nullable|array',
             'variants' => 'nullable|array',
         ]);
+        $this->subscriptions->enforceLimit($businessId, 'products');
         $product = Product::create([
             'business_id' => $businessId,
             'category_id' => $data['category_id'] ?? null,

@@ -5,7 +5,9 @@ use App\Models\BusinessMembership;
 use App\Models\Outlet;
 use App\Models\OutletMembership;
 use App\Models\Permission;
+use App\Models\Plan;
 use App\Models\Role;
+use App\Models\Subscription;
 use App\Models\User;
 use Laravel\Sanctum\Sanctum;
 
@@ -23,6 +25,11 @@ function createMembershipFixture($test): array
         ->postJson('/api/v1/outlets', ['name' => 'Main Outlet', 'code' => 'MAIN'])
         ->assertCreated()
         ->json('data');
+    // Upgrade subscription to Pro so the trial outlet limit no longer applies.
+    $proPlan = Plan::where('slug', 'pro')->firstOrFail();
+    $subscription = Subscription::where('business_id', (int) $business['id'])->firstOrFail();
+    $subscription->update(['plan_id' => $proPlan->id]);
+
     $second = $test->withHeaders($headers)
         ->postJson('/api/v1/outlets', ['name' => 'Second Outlet', 'code' => 'SECOND'])
         ->assertCreated()

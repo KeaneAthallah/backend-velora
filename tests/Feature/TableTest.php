@@ -1,7 +1,10 @@
 <?php
 
+use App\Models\Business;
 use App\Models\BusinessMembership;
+use App\Models\Plan;
 use App\Models\Role;
+use App\Models\Subscription;
 use App\Models\User;
 
 function floorPlanSetup($test): array
@@ -34,6 +37,12 @@ function floorPlanSetup($test): array
         'name' => 'Main hall',
         'sort_order' => 1,
     ])->json('data');
+
+    // Upgrade subscription in DB to Pro so we can create additional outlets later.
+    $biz = Business::where('name', 'Floor Biz')->firstOrFail();
+    $sub = Subscription::where('business_id', $biz->id)->firstOrFail();
+    $proPlan = Plan::where('slug', 'pro')->firstOrFail();
+    $sub->update(['plan_id' => $proPlan->id]);
 
     $table = $test->withHeaders($headers)->postJson('/api/v1/tables', [
         'name' => 'T01',

@@ -1,5 +1,7 @@
 <?php
 
+use App\Http\Controllers\Api\V1\AdminSubscriptionController;
+use App\Http\Controllers\Api\V1\AdvancedReportController;
 use App\Http\Controllers\Api\V1\AuditLogController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BusinessController;
@@ -10,6 +12,7 @@ use App\Http\Controllers\Api\V1\ChannelWebhookController;
 use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\DeviceController;
 use App\Http\Controllers\Api\V1\DiscountController;
+use App\Http\Controllers\Api\V1\ExportController;
 use App\Http\Controllers\Api\V1\GoogleAuthController;
 use App\Http\Controllers\Api\V1\IngredientController;
 use App\Http\Controllers\Api\V1\InventoryController;
@@ -24,6 +27,7 @@ use App\Http\Controllers\Api\V1\OutletController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentMethodController;
 use App\Http\Controllers\Api\V1\PermissionController;
+use App\Http\Controllers\Api\V1\PlanController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PromotionController;
 use App\Http\Controllers\Api\V1\PurchaseOrderController;
@@ -35,6 +39,8 @@ use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\SaleController;
 use App\Http\Controllers\Api\V1\ShiftController;
 use App\Http\Controllers\Api\V1\StockTransferController;
+use App\Http\Controllers\Api\V1\SubscriptionController;
+use App\Http\Controllers\Api\V1\SubscriptionWebhookController;
 use App\Http\Controllers\Api\V1\SupplierController;
 use App\Http\Controllers\Api\V1\SyncController;
 use App\Http\Controllers\Api\V1\TableController;
@@ -71,6 +77,15 @@ Route::prefix('v1')->group(function () {
     Route::post('channel-webhooks/{token}', [ChannelWebhookController::class, 'receive'])
         ->middleware('throttle:channel-webhook');
 
+    // public pricing (no auth, no tenant): powers the marketing pricing page
+    Route::get('plans', [PlanController::class, 'index']);
+    Route::get('plans/{slug}', [PlanController::class, 'show']);
+
+    // public payment provider callback. The provider signature is verified in
+    // the gateway before any record is touched, and the event id is unique.
+    Route::post('subscription/webhooks/{provider}', [SubscriptionWebhookController::class, 'handle'])
+        ->middleware('throttle:subscription-webhook');
+
     Route::middleware('auth:sanctum')->group(function () {
         Route::get('me', [MeController::class, 'show']);
         Route::post('auth/logout', [AuthController::class, 'logout']);
@@ -84,7 +99,23 @@ Route::prefix('v1')->group(function () {
         Route::delete('businesses/{business}', [BusinessController::class, 'destroy']);
 
         // tenant-scoped
-        Route::middleware('tenant')->group(function () {
+        Route::middleware(['tenant', 'subscription.active'])->group(function () {
+            // Subscription & billing. These stay reachable when a workspace has
+            // expired: EnsureSubscriptionActive explicitly exempts this prefix.
+            Route::get('subscription', [SubscriptionController::class, 'show']);
+            Route::get('subscription/plans', [SubscriptionController::class, 'plans']);
+            Route::post('subscription/checkout', [SubscriptionController::class, 'checkout']);
+            Route::post('subscription/change-plan', [SubscriptionController::class, 'changePlan']);
+            Route::post('subscription/renew', [SubscriptionController::class, 'renew']);
+            Route::post('subscription/cancel', [SubscriptionController::class, 'cancel']);
+            Route::post('subscription/resume', [SubscriptionController::class, 'resume']);
+            Route::get('subscription/invoices', [SubscriptionController::class, 'invoices']);
+            Route::get('subscription/invoices/{invoice}', [SubscriptionController::class, 'invoice']);
+            Route::get('subscription/payments', [SubscriptionController::class, 'payments']);
+            Route::post('subscription/payments/{payment}/sync', [SubscriptionController::class, 'syncPayment']);
+            Route::post('subscription/payments/{payment}/sandbox-complete', [SubscriptionController::class, 'sandboxComplete']);
+            Route::get('subscription/history', [SubscriptionController::class, 'history']);
+
             // apiResource already registers GET /outlets (index).
             Route::apiResource('outlets', OutletController::class);
 
@@ -256,6 +287,28 @@ Route::prefix('v1')->group(function () {
             Route::get('reports/inventory-balances', [ReportController::class, 'inventoryBalances']);
             Route::get('reports/low-stock', [ReportController::class, 'lowStock']);
 
+            // Pro-only reporting surfaces. The feature middleware is the
+            // server-side gate; the frontend only mirrors it.
+            Route::get('reports/advanced/sales-trend', [AdvancedReportController::class, 'salesTrend'])
+                ->middleware('subscription.feature:advanced_analytics');
+            Route::get('reports/advanced/outlet-comparison', [AdvancedReportController::class, 'outletComparison'])
+                ->middleware('subscription.feature:outlet_comparison');
+            Route::get('reports/advanced/product-performance', [AdvancedReportController::class, 'productPerformance'])
+                ->middleware('subscription.feature:advanced_reports');
+            Route::get('reports/advanced/insights', [AdvancedReportController::class, 'insights'])
+                ->middleware('subscription.feature:business_insights');
+
+            // CSV exports. Standard columns are available on every plan;
+            // `?advanced=1` requires the advanced_export feature.
+            Route::get('exports/sales', [ExportController::class, 'sales'])
+                ->middleware('subscription.feature:standard_export');
+            Route::get('exports/products', [ExportController::class, 'products'])
+                ->middleware('subscription.feature:standard_export');
+            Route::get('exports/customers', [ExportController::class, 'customers'])
+                ->middleware('subscription.feature:standard_export');
+            Route::get('exports/inventory', [ExportController::class, 'inventory'])
+                ->middleware('subscription.feature:standard_export');
+
             // audit
             Route::get('audit-logs', [AuditLogController::class, 'index']);
 
@@ -267,6 +320,27 @@ Route::prefix('v1')->group(function () {
 
             // webhooks (payment)
             Route::post('webhooks/payment/{provider}', [WebhookController::class, 'payment']);
+        });
+
+        // platform administration. Every action re-checks
+        // users.is_platform_admin inside AdminSubscriptionController; the
+        // route group is intentionally outside the tenant middleware because
+        // an administrator manages many businesses at once.
+        Route::prefix('admin')->group(function () {
+            Route::get('subscriptions', [AdminSubscriptionController::class, 'index']);
+            Route::get('subscriptions/overview', [AdminSubscriptionController::class, 'overview']);
+            Route::get('subscriptions/payments', [AdminSubscriptionController::class, 'payments']);
+            Route::get('subscriptions/invoices', [AdminSubscriptionController::class, 'invoices']);
+            Route::get('subscriptions/histories', [AdminSubscriptionController::class, 'histories']);
+            Route::get('subscriptions/webhook-events', [AdminSubscriptionController::class, 'webhookEvents']);
+            Route::get('subscriptions/plans', [AdminSubscriptionController::class, 'plans']);
+            Route::put('subscriptions/plans/{plan}', [AdminSubscriptionController::class, 'updatePlan']);
+            Route::post('subscriptions/payments/{payment}/confirm', [AdminSubscriptionController::class, 'confirmPayment']);
+            Route::get('subscriptions/{business}', [AdminSubscriptionController::class, 'show']);
+            Route::post('subscriptions/{business}/change-plan', [AdminSubscriptionController::class, 'changePlan']);
+            Route::post('subscriptions/{business}/extend-trial', [AdminSubscriptionController::class, 'extendTrial']);
+            Route::post('subscriptions/{business}/suspend', [AdminSubscriptionController::class, 'suspend']);
+            Route::post('subscriptions/{business}/reactivate', [AdminSubscriptionController::class, 'reactivate']);
         });
     });
 });

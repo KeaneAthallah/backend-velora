@@ -5,11 +5,15 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Outlet;
 use App\Services\AuthorizationService;
+use App\Services\Subscription\SubscriptionService;
 use Illuminate\Http\Request;
 
 class OutletController extends Controller
 {
-    public function __construct(protected AuthorizationService $authz) {}
+    public function __construct(
+        protected AuthorizationService $authz,
+        protected SubscriptionService $subscriptions,
+    ) {}
 
     public function index(Request $request)
     {
@@ -32,6 +36,7 @@ class OutletController extends Controller
             'timezone' => 'nullable|string|max:64',
             'settings' => 'nullable|array',
         ]);
+        $this->subscriptions->enforceLimit($businessId, 'outlets');
         $outlet = Outlet::create(array_merge($data, ['business_id' => $businessId, 'status' => 'active']));
 
         return $this->success($outlet, 'Outlet created', 201);

@@ -31,5 +31,14 @@ class AppServiceProvider extends ServiceProvider
 
             return Limit::perMinute(60)->by($token.'|'.$request->ip());
         });
+
+        // Payment providers retry callbacks. Cap them per provider/IP so a
+        // replay loop cannot turn into a write storm, while still allowing a
+        // legitimate burst after a provider outage.
+        RateLimiter::for('subscription-webhook', function (Request $request) {
+            $provider = (string) $request->route('provider');
+
+            return Limit::perMinute(120)->by($provider.'|'.$request->ip());
+        });
     }
 }

@@ -1,6 +1,8 @@
 <?php
 
 use App\Models\InventoryBalance;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\User;
 
 /**
@@ -25,6 +27,10 @@ function tenantBiz($test, string $suffix): array
     $outletA = $test->withHeaders($bizHeaders)
         ->postJson('/api/v1/outlets', ['name' => "A $suffix", 'code' => "TA-$suffix"])
         ->json('data');
+    // Upgrade subscription to Pro so we can create a second outlet for cross-outlet tests.
+    $subscription = Subscription::where('business_id', (int) $biz['id'])->firstOrFail();
+    $proPlan = Plan::where('slug', 'pro')->firstOrFail();
+    $subscription->update(['plan_id' => $proPlan->id]);
     $outletB = $test->withHeaders($bizHeaders)
         ->postJson('/api/v1/outlets', ['name' => "B $suffix", 'code' => "TB-$suffix"])
         ->json('data');

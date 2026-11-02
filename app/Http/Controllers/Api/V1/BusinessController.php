@@ -9,12 +9,16 @@ use App\Models\PaymentMethod;
 use App\Models\Permission;
 use App\Models\Role;
 use App\Services\AuthorizationService;
+use App\Services\Subscription\SubscriptionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
 class BusinessController extends Controller
 {
-    public function __construct(protected AuthorizationService $authz) {}
+    public function __construct(
+        protected AuthorizationService $authz,
+        protected SubscriptionService $subscriptions,
+    ) {}
 
     public function index(Request $request)
     {
@@ -55,6 +59,11 @@ class BusinessController extends Controller
             'joined_at' => now(),
         ]);
         PaymentMethod::ensureDefaults($business->id);
+
+        // A new workspace starts on the 30-day trial. Creating it here (rather
+        // than only lazily on first tenant request) means the onboarding
+        // screen can show the trial dates immediately.
+        $this->subscriptions->forBusiness($business, $request->user());
 
         return $this->success($business, 'Business created', 201);
     }

@@ -9,6 +9,7 @@ use App\Models\OutletMembership;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\AuthorizationService;
+use App\Services\Subscription\SubscriptionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -16,7 +17,10 @@ use Illuminate\Validation\Rule;
 
 class MembershipController extends Controller
 {
-    public function __construct(protected AuthorizationService $authz) {}
+    public function __construct(
+        protected AuthorizationService $authz,
+        protected SubscriptionService $subscriptions,
+    ) {}
 
     public function index(Request $request)
     {
@@ -69,6 +73,18 @@ class MembershipController extends Controller
                 Rule::exists('outlets', 'id')->where(fn ($query) => $query->where('business_id', $businessId)),
             ],
         ]);
+
+        // Re-inviting an existing active member must not consume another seat.
+        $existingUser = User::where('email', $data['email'])->first();
+        $alreadyMember = $existingUser
+            && BusinessMembership::where('user_id', $existingUser->id)
+                ->where('business_id', $businessId)
+                ->where('status', 'active')
+                ->exists();
+
+        if (! $alreadyMember) {
+            $this->subscriptions->enforceLimit($businessId, 'users');
+        }
 
         $membership = DB::transaction(function () use ($data, $businessId) {
             $user = User::firstOrCreate(['email' => $data['email']], [
