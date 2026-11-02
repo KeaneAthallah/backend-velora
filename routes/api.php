@@ -280,6 +280,7 @@ Route::prefix('v1')->group(function () {
             Route::post('shifts/{shift}/close', [ShiftController::class, 'close']);
             Route::get('shifts', [ShiftController::class, 'index']);
             Route::post('shifts/{shift}/cash-movement', [ShiftController::class, 'cashMovement']);
+            Route::get('shifts/{shift}/cash-movements', [ShiftController::class, 'cashMovements']);
 
             // reports
             Route::get('reports/sales-summary', [ReportController::class, 'salesSummary']);

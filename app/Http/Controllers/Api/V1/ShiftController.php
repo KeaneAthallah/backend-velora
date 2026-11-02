@@ -134,6 +134,26 @@ class ShiftController extends Controller
             'actor_id' => $request->user()->id,
         ]);
 
+        // Keep the drawer total in step while the shift is open; closing the
+        // shift recomputes it from payments and movements anyway.
+        $shift->expected_cash = $data['type'] === 'in'
+            ? bcadd((string) $shift->expected_cash, (string) $data['amount'], 4)
+            : bcsub((string) $shift->expected_cash, (string) $data['amount'], 4);
+        $shift->save();
+
         return $this->success($cm, 'Recorded', 201);
+    }
+
+    public function cashMovements(Request $request, RegisterShift $shift)
+    {
+        $businessId = $request->attributes->get('business_id');
+        if ($shift->business_id !== $businessId) {
+            return $this->error('Not found', 404);
+        }
+        $this->authz->requirePermission($request->user(), 'shifts.view', $businessId);
+
+        return $this->success(CashMovement::where('register_shift_id', $shift->id)
+            ->orderBy('created_at', 'desc')
+            ->paginate(50));
     }
 }
