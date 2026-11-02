@@ -24,7 +24,11 @@ return new class extends Migration
         Schema::create('recipe_ingredients', function (Blueprint $table) {
             $table->id();
             $table->foreignId('recipe_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('ingredient_id')->constrained()->cascadeOnDelete();
+            // No foreign key here: the `ingredients` table is introduced by the
+            // later ingredient/recipe migration, and MySQL cannot create a
+            // constraint against a table that does not exist yet. The column
+            // and its index keep the legacy relation usable until then.
+            $table->unsignedBigInteger('ingredient_id');
             $table->decimal('quantity_per_unit', 18, 4);
             $table->string('unit', 32)->default('g');
             $table->timestamps();
