@@ -37,7 +37,8 @@ class AuthController extends Controller
             'password' => 'required|string',
         ]);
         $user = User::where('email', $data['email'])->first();
-        if (! $user || ! Hash::check($data['password'], $user->password)) {
+        // Google-only accounts have no password to check.
+        if (! $user || ! $user->password || ! Hash::check($data['password'], $user->password)) {
             return $this->error('Invalid credentials', 401, [], 'INVALID_CREDENTIALS');
         }
         if ($user->status !== 'active') {
@@ -58,11 +59,13 @@ class AuthController extends Controller
     public function changePassword(Request $request)
     {
         $data = $request->validate([
-            'current_password' => 'required|string',
+            'current_password' => 'nullable|string',
             'password' => ['required', 'confirmed', PasswordRule::min(8)],
         ]);
         $user = $request->user();
-        if (! Hash::check($data['current_password'], $user->password)) {
+        // An OAuth-created account has no password yet; this call sets the first
+        // one. Everyone else must prove the current password.
+        if ($user->password && ! Hash::check((string) $data['current_password'], $user->password)) {
             return $this->error('Current password incorrect', 422, [], 'INVALID_PASSWORD');
         }
         $user->update(['password' => Hash::make($data['password'])]);

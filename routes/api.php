@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\V1\ChannelWebhookController;
 use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\DeviceController;
 use App\Http\Controllers\Api\V1\DiscountController;
+use App\Http\Controllers\Api\V1\GoogleAuthController;
 use App\Http\Controllers\Api\V1\IngredientController;
 use App\Http\Controllers\Api\V1\InventoryController;
 use App\Http\Controllers\Api\V1\KitchenController;
@@ -52,6 +53,17 @@ Route::prefix('v1')->group(function () {
     Route::post('auth/forgot-password', [AuthController::class, 'forgotPassword'])
         ->middleware('throttle:10,1');
     Route::post('auth/reset-password', [AuthController::class, 'resetPassword'])
+        ->middleware('throttle:10,1');
+
+    // Google sign-in. The redirect endpoint returns the authorize URL, Google
+    // calls back on the API origin, and the browser is then handed to the
+    // frontend with a one-time code that the exchange endpoint trades for a
+    // Sanctum token. No session is involved, so state is encrypted and expiring.
+    Route::get('auth/google/redirect', [GoogleAuthController::class, 'redirect'])
+        ->middleware('throttle:10,1');
+    Route::get('auth/google/callback', [GoogleAuthController::class, 'callback'])
+        ->middleware('throttle:30,1');
+    Route::post('auth/google/exchange', [GoogleAuthController::class, 'exchange'])
         ->middleware('throttle:10,1');
 
     // public channel partner ingress (signed with the channel secret), throttled

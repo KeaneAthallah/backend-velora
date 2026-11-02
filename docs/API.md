@@ -9,6 +9,9 @@ Base URL: `/api/v1`
 - POST `/auth/change-password` - change password (auth)
 - POST `/auth/forgot-password` - request reset link
 - POST `/auth/reset-password` - reset password
+- GET `/auth/google/redirect?next=…` - returns `{ url }`, the Google authorize URL (503 `GOOGLE_NOT_CONFIGURED` when credentials are missing)
+- GET `/auth/google/callback` - Google's redirect target; hands the browser to the frontend with a one-time `code` (or `error`). The same handler is also served at the root-level `/auth/google/callback` (no `/api/v1` prefix) because that is the URI registered on the Google OAuth client; it must match `GOOGLE_REDIRECT_URI` exactly.
+- POST `/auth/google/exchange` - `{ code }` → `{ user, token }`; the code is single use and expires after 5 minutes
 - GET `/me` - current user profile (auth)
 
 ## Multi-tenant context
