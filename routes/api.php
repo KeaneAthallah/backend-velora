@@ -38,6 +38,7 @@ use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\SaleController;
 use App\Http\Controllers\Api\V1\ShiftController;
+use App\Http\Controllers\Api\V1\StocktakeController;
 use App\Http\Controllers\Api\V1\StockTransferController;
 use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\SubscriptionWebhookController;
@@ -195,6 +196,12 @@ Route::prefix('v1')->group(function () {
             Route::get('inventory/movements', [InventoryController::class, 'movements']);
             Route::apiResource('stock-transfers', StockTransferController::class);
             Route::post('stock-transfers/{stockTransfer}/complete', [StockTransferController::class, 'complete']);
+            Route::get('stocktakes', [StocktakeController::class, 'index']);
+            Route::post('stocktakes', [StocktakeController::class, 'store']);
+            Route::get('stocktakes/{stocktake}', [StocktakeController::class, 'show']);
+            Route::put('stocktakes/{stocktake}', [StocktakeController::class, 'update']);
+            Route::post('stocktakes/{stocktake}/post', [StocktakeController::class, 'post']);
+            Route::post('stocktakes/{stocktake}/cancel', [StocktakeController::class, 'cancel']);
 
             // ingredients & recipes (BOM)
             Route::get('ingredients', [IngredientController::class, 'index']);

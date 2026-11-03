@@ -25,7 +25,7 @@ class StockTransferController extends Controller
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'inventory.view', $businessId);
 
-        return $this->success(StockTransfer::where('business_id', $businessId)->with('items')->paginate(50));
+        return $this->success(StockTransfer::where('business_id', $businessId)->with('items.product')->paginate(50));
     }
 
     public function store(Request $request)
@@ -89,7 +89,7 @@ class StockTransferController extends Controller
             return $t;
         });
 
-        return $this->success($transfer->load('items'), 'Created', 201);
+        return $this->success($transfer->load('items.product'), 'Created', 201);
     }
 
     public function show(Request $request, StockTransfer $stockTransfer)
@@ -99,7 +99,7 @@ class StockTransferController extends Controller
             return $this->error('Not found', 404);
         }
 
-        return $this->success($stockTransfer->load('items'));
+        return $this->success($stockTransfer->load('items.product'));
     }
 
     public function update(Request $request, StockTransfer $stockTransfer)
@@ -217,6 +217,6 @@ class StockTransferController extends Controller
             return $this->error($e->getMessage(), 422, [], 'TRANSFER_ERROR');
         }
 
-        return $this->success($stockTransfer->fresh()->load('items'));
+        return $this->success($stockTransfer->fresh()->load('items.product'));
     }
 }

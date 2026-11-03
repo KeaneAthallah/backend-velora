@@ -18,7 +18,7 @@ Base URL: `/api/v1`
 Protected endpoints require `Authorization: Bearer <token>`. Tenant context resolved via `X-Business-Id` and optional `X-Outlet-Id` headers (or `business_id`/`outlet_id` body params). Platform admins may access any business.
 
 ## Modules
-Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers (loyalty), Loyalty programme and ledger, Promotions and redemptions, Suppliers, Inventory (balances/adjust/movements, stock transfers), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject), Sales Channels (online ordering, delivery partners, inbound webhook orders), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (offline bootstrap, cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
+Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers (loyalty), Loyalty programme and ledger, Promotions and redemptions, Suppliers, Inventory (balances/adjust/movements, stock transfers, stocktakes), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject), Sales Channels (online ordering, delivery partners, inbound webhook orders), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement, cash movement history), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (offline bootstrap, cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
 
 ## Menu, modifiers, and availability
 All paths require tenant context. Permissions: `menu.view`, `menu.manage`, `menu.availability`, `menu.dayparts`.
@@ -68,6 +68,16 @@ An order is a draft sale, not a second table: `sales.status = draft` until check
 - POST `/orders/{sale}/cancel` — `{ reason }`; voids the draft without touching stock.
 
 Order numbers are per outlet + order type + business day: `{OUTLETCODE}-{DI|TA|DL|PU}-{YYYYMMDD}-{seq:03}`. Draft orders keep `receipt_number = OPEN-{order_number}` until checkout. Delivery orders must include `fulfilment.contact_phone` and `fulfilment.address`. Immediate sales (`POST /sales`) also accept `order_type` and `fulfilment` and return the same order fields with `order_status = completed`.
+
+## Stocktakes
+Permissions: `inventory.view` (read), `inventory.adjust` (create, count, post, cancel).
+
+- GET `/stocktakes?outlet_id=…` — paginated counts with their items and outlet.
+- POST `/stocktakes` — `{ outlet_id, notes? }`; snapshots every tracked product at the outlet with its current balance as `expected_quantity` and `counted_quantity = 0`, status `draft`.
+- GET `/stocktakes/{stocktake}` — one count with items and product.
+- PUT `/stocktakes/{stocktake}` — `{ notes?, items: [{ id, counted_quantity }] }`; saves counts and moves the count to `in_progress`. Item ids must belong to the count.
+- POST `/stocktakes/{stocktake}/post` — recomputes every expected quantity against live stock, writes the variance as an `adjustment` inventory movement (`reference_type = stocktake`), and closes the count. Posting twice returns `422 STOCKTAKE_ERROR`.
+- POST `/stocktakes/{stocktake}/cancel` — closes an open count without moving stock.
 
 ## Floor plan (areas and tables)
 Permissions: `tables.view`, `tables.manage`.
