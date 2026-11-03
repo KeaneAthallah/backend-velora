@@ -8,6 +8,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Str;
 use Laravel\Socialite\Contracts\User as SocialiteUser;
@@ -95,7 +96,12 @@ class GoogleAuthController extends Controller
         }
 
         try {
-            $user = $this->resolveUser($google, $email);
+            $user = $this->resolveUser(
+                (string) $google->getId(),
+                $email,
+                $google->getName(),
+                $google->getAvatar()
+            );
         } catch (Throwable $e) {
             report($e);
 
@@ -145,9 +151,68 @@ class GoogleAuthController extends Controller
         return $this->success(['user' => $user, 'token' => $token]);
     }
 
-    private function resolveUser(SocialiteUser $google, string $email): User
+    /**
+     * Verify a Google ID token obtained on a native client and trade it for a
+     * Sanctum token. Used by the mobile app, which cannot run the web redirect
+     * flow.
+     */
+    public function token(Request $request): JsonResponse
     {
-        $user = User::where('google_id', $google->getId())->first();
+        $data = $request->validate(['id_token' => 'required|string']);
+
+        if (! $this->configured()) {
+            return $this->error('Google sign-in is not configured on this server.', 503, [], 'GOOGLE_NOT_CONFIGURED');
+        }
+
+        try {
+            $info = Http::timeout(10)->get('https://oauth2.googleapis.com/tokeninfo', [
+                'id_token' => $data['id_token'],
+            ])->throw()->json();
+        } catch (Throwable $e) {
+            report($e);
+
+            return $this->error('Invalid Google token.', 422, [], 'GOOGLE_TOKEN_INVALID');
+        }
+
+        $audience = config('services.google.client_id');
+        if (! is_array($info) || ($info['aud'] ?? null) !== $audience) {
+            return $this->error('Invalid Google token audience.', 422, [], 'GOOGLE_TOKEN_INVALID');
+        }
+
+        $email = strtolower(trim((string) ($info['email'] ?? '')));
+        if ($email === '') {
+            return $this->error('Google account has no email.', 422, [], 'GOOGLE_EMAIL_MISSING');
+        }
+
+        if (! filter_var($info['email_verified'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+            return $this->error('Google email is not verified.', 422, [], 'GOOGLE_EMAIL_UNVERIFIED');
+        }
+
+        try {
+            $user = $this->resolveUser(
+                (string) ($info['sub'] ?? ''),
+                $email,
+                $info['name'] ?? null,
+                $info['picture'] ?? null
+            );
+        } catch (Throwable $e) {
+            report($e);
+
+            return $this->error('Google sign-in failed.', 422, [], 'GOOGLE_FAILED');
+        }
+
+        if ($user->status !== 'active') {
+            return $this->error('Account inactive', 403, [], 'ACCOUNT_INACTIVE');
+        }
+
+        $token = $user->createToken('auth')->plainTextToken;
+
+        return $this->success(['user' => $user, 'token' => $token]);
+    }
+
+    private function resolveUser(string $googleId, string $email, ?string $name, ?string $avatar): User
+    {
+        $user = User::where('google_id', $googleId)->first();
 
         if (! $user) {
             $user = User::whereRaw('lower(email) = ?', [$email])->first();
@@ -155,10 +220,10 @@ class GoogleAuthController extends Controller
 
         if (! $user) {
             $user = User::create([
-                'name' => $google->getName() ?: Str::before($email, '@'),
+                'name' => $name ?: Str::before($email, '@'),
                 'email' => $email,
-                'google_id' => $google->getId(),
-                'avatar_url' => $google->getAvatar(),
+                'google_id' => $googleId,
+                'avatar_url' => $avatar,
                 'password' => null,
                 // Set explicitly: a fresh model does not carry column defaults.
                 'status' => 'active',
@@ -170,9 +235,9 @@ class GoogleAuthController extends Controller
             return $user;
         }
 
-        $changes = ['google_id' => $google->getId()];
-        if ($google->getAvatar()) {
-            $changes['avatar_url'] = $google->getAvatar();
+        $changes = ['google_id' => $googleId];
+        if ($avatar) {
+            $changes['avatar_url'] = $avatar;
         }
         $user->forceFill($changes)->save();
 

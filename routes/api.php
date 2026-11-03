@@ -72,6 +72,8 @@ Route::prefix('v1')->group(function () {
         ->middleware('throttle:30,1');
     Route::post('auth/google/exchange', [GoogleAuthController::class, 'exchange'])
         ->middleware('throttle:10,1');
+    Route::post('auth/google/token', [GoogleAuthController::class, 'token'])
+        ->middleware('throttle:10,1');
 
     // public channel partner ingress (signed with the channel secret), throttled
     // per channel token so a burst or a replay loop cannot flood order creation
