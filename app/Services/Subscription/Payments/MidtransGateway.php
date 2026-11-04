@@ -47,10 +47,18 @@ class MidtransGateway implements PaymentGateway
             $payload['customer_details'] = $options['customer'];
         }
 
-        $response = Http::withBasicAuth(config('subscriptions.providers.midtrans.server_key'), '')
+        $request = Http::withBasicAuth(config('subscriptions.providers.midtrans.server_key'), '')
             ->acceptJson()
-            ->timeout(20)
-            ->post(config('subscriptions.providers.midtrans.snap_url'), $payload);
+            ->timeout(20);
+
+        // Route this transaction's webhook to the configured URL instead of the
+        // dashboard setting (dev.ps1 sets this to a cloudflared tunnel).
+        $notificationUrl = config('subscriptions.providers.midtrans.notification_url');
+        if (filled($notificationUrl)) {
+            $request = $request->withHeaders(['X-Override-Notification' => $notificationUrl]);
+        }
+
+        $response = $request->post(config('subscriptions.providers.midtrans.snap_url'), $payload);
 
         if (! $response->successful()) {
             throw new SubscriptionException(

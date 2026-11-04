@@ -64,6 +64,10 @@ return [
             'server_key' => env('MIDTRANS_SERVER_KEY', ''),
             'client_key' => env('MIDTRANS_CLIENT_KEY', ''),
             'is_production' => env('MIDTRANS_IS_PRODUCTION', false),
+            // When set, each Snap transaction sends Midtrans this webhook URL
+            // (X-Override-Notification) instead of the dashboard setting. Used
+            // by dev.ps1 to point local checkouts at a cloudflared tunnel.
+            'notification_url' => env('MIDTRANS_NOTIFICATION_URL', ''),
             'snap_url' => env('MIDTRANS_SNAP_URL', 'https://app.sandbox.midtrans.com/snap/v1/transactions'),
             'api_url' => env('MIDTRANS_API_URL', 'https://api.sandbox.midtrans.com/v2'),
         ],
