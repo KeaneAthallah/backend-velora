@@ -90,6 +90,62 @@ test('a stocktake snapshots tracked products, saves counts and posts adjustments
     ])->assertStatus(422);
 });
 
+test('an all-zero stocktake needs explicit confirmation before it wipes stock', function () {
+    $ctx = setupStocktakeBiz($this);
+    $h = $ctx['outletHeaders'];
+
+    $stocktake = $this->withHeaders($h)->postJson('/api/v1/stocktakes', [
+        'outlet_id' => $ctx['outlet']['id'],
+    ])->json('data');
+
+    // Every line is zero while 10 units are on hand: refuse and keep stock.
+    $this->withHeaders($h)->postJson("/api/v1/stocktakes/{$stocktake['id']}/post")
+        ->assertStatus(422)
+        ->assertJsonPath('code', 'STOCKTAKE_CONFIRMATION_REQUIRED');
+
+    $balance = $this->withHeaders($h)
+        ->getJson('/api/v1/inventory/balances?outlet_id='.$ctx['outlet']['id'])
+        ->json('data.data.0.quantity');
+    expect($balance)->toBe('10.0000');
+
+    // The count stayed open, so the acknowledged retry applies the wipe.
+    $this->withHeaders($h)->postJson("/api/v1/stocktakes/{$stocktake['id']}/post", [
+        'confirm_zero_count' => true,
+    ])->assertOk()
+        ->assertJsonPath('data.status', 'completed');
+
+    $balance = $this->withHeaders($h)
+        ->getJson('/api/v1/inventory/balances?outlet_id='.$ctx['outlet']['id'])
+        ->json('data.data.0.quantity');
+    expect($balance)->toBe('0.0000');
+
+    $movement = $this->withHeaders($h)
+        ->getJson('/api/v1/inventory/movements?product_id='.$ctx['tracked']['id'])
+        ->json('data.data.0');
+    expect($movement['quantity'])->toBe('-10.0000');
+});
+
+test('a zero stocktake on an outlet without stock posts without confirmation', function () {
+    $ctx = setupStocktakeBiz($this);
+    $h = $ctx['outletHeaders'];
+
+    // Empty the outlet first, then count it as zero: nothing is wiped.
+    $this->withHeaders($h)->postJson('/api/v1/inventory/adjust', [
+        'outlet_id' => $ctx['outlet']['id'],
+        'product_id' => $ctx['tracked']['id'],
+        'quantity' => -10,
+        'reason' => 'Emptied for test',
+    ])->assertOk();
+
+    $stocktake = $this->withHeaders($h)->postJson('/api/v1/stocktakes', [
+        'outlet_id' => $ctx['outlet']['id'],
+    ])->json('data');
+
+    $this->withHeaders($h)->postJson("/api/v1/stocktakes/{$stocktake['id']}/post")
+        ->assertOk()
+        ->assertJsonPath('data.status', 'completed');
+});
+
 test('stocktakes are tenant scoped and can be cancelled without moving stock', function () {
     $ctx = setupStocktakeBiz($this);
     $h = $ctx['outletHeaders'];

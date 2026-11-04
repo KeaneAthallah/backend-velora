@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Exceptions\StocktakeConfirmationRequiredException;
 use App\Http\Controllers\Controller;
 use App\Models\InventoryBalance;
 use App\Models\InventoryMovement;
@@ -146,6 +147,10 @@ class StocktakeController extends Controller
     /**
      * Post the count: recompute each expected quantity against live stock,
      * write the variance as an inventory adjustment, then close the count.
+     *
+     * An all-zero count on an outlet that still holds stock would wipe every
+     * balance, so it is only applied when the client explicitly acknowledges
+     * it with `confirm_zero_count`.
      */
     public function post(Request $request, Stocktake $stocktake)
     {
@@ -155,8 +160,13 @@ class StocktakeController extends Controller
         }
         $this->authz->requirePermission($request->user(), 'inventory.adjust', $businessId);
 
+        $data = $request->validate([
+            'confirm_zero_count' => 'sometimes|boolean',
+        ]);
+        $confirmZeroCount = (bool) ($data['confirm_zero_count'] ?? false);
+
         try {
-            DB::transaction(function () use ($stocktake, $businessId, $request) {
+            DB::transaction(function () use ($stocktake, $businessId, $request, $confirmZeroCount) {
                 $locked = Stocktake::whereKey($stocktake->id)
                     ->where('business_id', $businessId)
                     ->lockForUpdate()
@@ -171,6 +181,9 @@ class StocktakeController extends Controller
 
                 $locked->load('items');
 
+                $anyCounted = false;
+                $anyStockOnHand = false;
+
                 foreach ($locked->items as $item) {
                     $balance = InventoryBalance::lockForUpdate()->firstOrCreate(
                         [
@@ -183,6 +196,8 @@ class StocktakeController extends Controller
 
                     $expected = (string) $balance->quantity;
                     $delta = bcsub((string) $item->counted_quantity, $expected, 4);
+                    $anyCounted = $anyCounted || bccomp((string) $item->counted_quantity, '0', 4) !== 0;
+                    $anyStockOnHand = $anyStockOnHand || bccomp($expected, '0', 4) !== 0;
 
                     $item->expected_quantity = $expected;
                     if (bccomp($delta, '0', 4) !== 0) {
@@ -206,10 +221,18 @@ class StocktakeController extends Controller
                     $item->save();
                 }
 
+                if (! $confirmZeroCount && $locked->items->isNotEmpty() && ! $anyCounted && $anyStockOnHand) {
+                    throw new StocktakeConfirmationRequiredException(
+                        'Every line is counted as zero but stock is on hand. Confirm the all-zero count to post it.'
+                    );
+                }
+
                 $locked->status = 'completed';
                 $locked->completed_at = now();
                 $locked->save();
             });
+        } catch (StocktakeConfirmationRequiredException $e) {
+            return $this->error($e->getMessage(), 422, [], 'STOCKTAKE_CONFIRMATION_REQUIRED');
         } catch (RuntimeException $e) {
             return $this->error($e->getMessage(), 422, [], 'STOCKTAKE_ERROR');
         }

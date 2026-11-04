@@ -76,7 +76,7 @@ Permissions: `inventory.view` (read), `inventory.adjust` (create, count, post, c
 - POST `/stocktakes` — `{ outlet_id, notes? }`; snapshots every tracked product at the outlet with its current balance as `expected_quantity` and `counted_quantity = 0`, status `draft`.
 - GET `/stocktakes/{stocktake}` — one count with items and product.
 - PUT `/stocktakes/{stocktake}` — `{ notes?, items: [{ id, counted_quantity }] }`; saves counts and moves the count to `in_progress`. Item ids must belong to the count.
-- POST `/stocktakes/{stocktake}/post` — recomputes every expected quantity against live stock, writes the variance as an `adjustment` inventory movement (`reference_type = stocktake`), and closes the count. Posting twice returns `422 STOCKTAKE_ERROR`.
+- POST `/stocktakes/{stocktake}/post` — recomputes every expected quantity against live stock, writes the variance as an `adjustment` inventory movement (`reference_type = stocktake`), and closes the count. Posting twice returns `422 STOCKTAKE_ERROR`. An all-zero count on an outlet that still holds stock is refused with `422 STOCKTAKE_CONFIRMATION_REQUIRED` unless the body sends `{ confirm_zero_count: true }`; the web UI asks for that confirmation before sending it.
 - POST `/stocktakes/{stocktake}/cancel` — closes an open count without moving stock.
 
 ## Floor plan (areas and tables)
