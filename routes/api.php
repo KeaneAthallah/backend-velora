@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\V1\AdminSubscriptionController;
 use App\Http\Controllers\Api\V1\ApInvoiceController;
 use App\Http\Controllers\Api\V1\AppointmentController;
 use App\Http\Controllers\Api\V1\ArInvoiceController;
+use App\Http\Controllers\Api\V1\AttendanceController;
 use App\Http\Controllers\Api\V1\AuditLogController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BusinessController;
@@ -13,8 +14,11 @@ use App\Http\Controllers\Api\V1\CategoryController;
 use App\Http\Controllers\Api\V1\ChannelController;
 use App\Http\Controllers\Api\V1\ChannelWebhookController;
 use App\Http\Controllers\Api\V1\CustomerController;
+use App\Http\Controllers\Api\V1\CustomerGroupController;
+use App\Http\Controllers\Api\V1\DepartmentController;
 use App\Http\Controllers\Api\V1\DeviceController;
 use App\Http\Controllers\Api\V1\DiscountController;
+use App\Http\Controllers\Api\V1\EmployeeProfileController;
 use App\Http\Controllers\Api\V1\ExportController;
 use App\Http\Controllers\Api\V1\FinancialTransactionController;
 use App\Http\Controllers\Api\V1\GoogleAuthController;
@@ -23,6 +27,7 @@ use App\Http\Controllers\Api\V1\IngredientController;
 use App\Http\Controllers\Api\V1\InventoryController;
 use App\Http\Controllers\Api\V1\JournalEntryController;
 use App\Http\Controllers\Api\V1\KitchenController;
+use App\Http\Controllers\Api\V1\LeaveRequestController;
 use App\Http\Controllers\Api\V1\LoyaltyController;
 use App\Http\Controllers\Api\V1\MeController;
 use App\Http\Controllers\Api\V1\MembershipController;
@@ -34,6 +39,7 @@ use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentMethodController;
 use App\Http\Controllers\Api\V1\PermissionController;
 use App\Http\Controllers\Api\V1\PlanController;
+use App\Http\Controllers\Api\V1\PositionController;
 use App\Http\Controllers\Api\V1\PriceListController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PromotionController;
@@ -51,11 +57,13 @@ use App\Http\Controllers\Api\V1\StockTransferController;
 use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\SubscriptionWebhookController;
 use App\Http\Controllers\Api\V1\SupplierController;
+use App\Http\Controllers\Api\V1\SupplierQuotationController;
 use App\Http\Controllers\Api\V1\SyncController;
 use App\Http\Controllers\Api\V1\TableController;
 use App\Http\Controllers\Api\V1\TaxRateController;
 use App\Http\Controllers\Api\V1\UnitController;
 use App\Http\Controllers\Api\V1\WarehouseController;
+use App\Http\Controllers\Api\V1\WarehouseZoneController;
 use App\Http\Controllers\Api\V1\WebhookController;
 use App\Http\Controllers\Api\V1\WorkspaceController;
 use Illuminate\Support\Facades\Route;
@@ -379,6 +387,41 @@ Route::prefix('v1')->group(function () {
             Route::get('ap-invoices/{apInvoice}', [ApInvoiceController::class, 'show']);
             Route::post('ap-invoices/{apInvoice}/pay', [ApInvoiceController::class, 'pay']);
             Route::get('ap-aging', [ApInvoiceController::class, 'aging']);
+
+            // HR
+            Route::get('departments', [DepartmentController::class, 'index']);
+            Route::get('positions', [PositionController::class, 'index']);
+            Route::get('employee-profiles', [EmployeeProfileController::class, 'index']);
+            Route::post('employee-profiles', [EmployeeProfileController::class, 'store']);
+            Route::put('employee-profiles/{employeeProfile}', [EmployeeProfileController::class, 'update']);
+            Route::get('attendances', [AttendanceController::class, 'index']);
+            Route::post('attendances/check-in', [AttendanceController::class, 'checkIn']);
+            Route::post('attendances/{attendance}/check-out', [AttendanceController::class, 'checkOut']);
+            Route::get('leave-categories', [LeaveRequestController::class, 'categories']);
+            Route::post('leave-categories', [LeaveRequestController::class, 'storeCategory']);
+            Route::get('leave-requests', [LeaveRequestController::class, 'index']);
+            Route::post('leave-requests', [LeaveRequestController::class, 'store']);
+            Route::post('leave-requests/{leaveRequest}/approve', [LeaveRequestController::class, 'approve']);
+
+            // CRM
+            Route::get('customer-groups', [CustomerGroupController::class, 'groups']);
+            Route::post('customer-groups', [CustomerGroupController::class, 'storeGroup']);
+            Route::get('customer-tags', [CustomerGroupController::class, 'tags']);
+            Route::post('customer-tags', [CustomerGroupController::class, 'storeTag']);
+            Route::post('customers/{customer}/groups', [CustomerGroupController::class, 'assignGroups']);
+            Route::post('customers/{customer}/tags', [CustomerGroupController::class, 'assignTags']);
+            Route::get('customers/{customer}/notes', [CustomerGroupController::class, 'notes']);
+            Route::post('customers/{customer}/notes', [CustomerGroupController::class, 'storeNote']);
+            Route::get('customers/{customer}/activity', [CustomerGroupController::class, 'activity']);
+
+            // warehouse zones/bins
+            Route::get('warehouse-zones', [WarehouseZoneController::class, 'index']);
+            Route::post('warehouse-zones', [WarehouseZoneController::class, 'store']);
+            Route::post('warehouse-zones/{warehouseZone}/bins', [WarehouseZoneController::class, 'storeBin']);
+
+            // supplier quotations
+            Route::get('supplier-quotations', [SupplierQuotationController::class, 'index']);
+            Route::post('supplier-quotations', [SupplierQuotationController::class, 'store']);
 
             // audit
             Route::get('audit-logs', [AuditLogController::class, 'index']);

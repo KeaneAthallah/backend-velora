@@ -41,6 +41,16 @@ class PermissionSeeder extends Seeder
             'financial_transactions.view', 'financial_transactions.manage',
             'ar.view', 'ar.manage',
             'ap.view', 'ap.manage',
+            // HR
+            'hr.view', 'hr.manage',
+            'attendance.view', 'attendance.manage',
+            'leave.view', 'leave.manage',
+            'payroll.view', 'payroll.manage',
+            // CRM
+            'crm.view', 'crm.manage',
+            // Inventory improvements
+            'warehouse_zones.view', 'warehouse_zones.manage',
+            'supplier_quotations.view', 'supplier_quotations.manage',
             // Industry-specific
             'services.view', 'services.manage',
             'appointments.view', 'appointments.create', 'appointments.manage',

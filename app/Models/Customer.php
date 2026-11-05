@@ -35,6 +35,26 @@ class Customer extends Model
         return $this->hasMany(Sale::class);
     }
 
+    public function groups()
+    {
+        return $this->belongsToMany(CustomerGroup::class, 'customer_customer_group');
+    }
+
+    public function tags()
+    {
+        return $this->belongsToMany(CustomerTag::class, 'customer_customer_tag');
+    }
+
+    public function notes()
+    {
+        return $this->hasMany(CustomerNote::class);
+    }
+
+    public function activityLogs()
+    {
+        return $this->hasMany(CustomerActivityLog::class);
+    }
+
     public function loyaltyTransactions()
     {
         return $this->hasMany(LoyaltyTransaction::class);
