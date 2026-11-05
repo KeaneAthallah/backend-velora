@@ -38,6 +38,9 @@ class PermissionSeeder extends Seeder
             'accounts.view', 'accounts.manage',
             'journal.view', 'journal.manage',
             'financial_reports.view',
+            'financial_transactions.view', 'financial_transactions.manage',
+            'ar.view', 'ar.manage',
+            'ap.view', 'ap.manage',
             // Industry-specific
             'services.view', 'services.manage',
             'appointments.view', 'appointments.create', 'appointments.manage',

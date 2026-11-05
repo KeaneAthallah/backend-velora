@@ -2,7 +2,9 @@
 
 use App\Http\Controllers\Api\V1\AccountController;
 use App\Http\Controllers\Api\V1\AdminSubscriptionController;
+use App\Http\Controllers\Api\V1\ApInvoiceController;
 use App\Http\Controllers\Api\V1\AppointmentController;
+use App\Http\Controllers\Api\V1\ArInvoiceController;
 use App\Http\Controllers\Api\V1\AuditLogController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BusinessController;
@@ -14,6 +16,7 @@ use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\DeviceController;
 use App\Http\Controllers\Api\V1\DiscountController;
 use App\Http\Controllers\Api\V1\ExportController;
+use App\Http\Controllers\Api\V1\FinancialTransactionController;
 use App\Http\Controllers\Api\V1\GoogleAuthController;
 use App\Http\Controllers\Api\V1\IndustryController;
 use App\Http\Controllers\Api\V1\IngredientController;
@@ -358,6 +361,24 @@ Route::prefix('v1')->group(function () {
             Route::post('journal-entries/{journalEntry}/reverse', [JournalEntryController::class, 'reverse']);
             Route::get('trial-balance', [JournalEntryController::class, 'trialBalance']);
             Route::get('general-ledger', [JournalEntryController::class, 'generalLedger']);
+
+            // financial transactions (income/expense)
+            Route::get('financial-transactions', [FinancialTransactionController::class, 'index']);
+            Route::post('financial-transactions', [FinancialTransactionController::class, 'store']);
+
+            // accounts receivable
+            Route::get('ar-invoices', [ArInvoiceController::class, 'index']);
+            Route::post('ar-invoices', [ArInvoiceController::class, 'store']);
+            Route::get('ar-invoices/{arInvoice}', [ArInvoiceController::class, 'show']);
+            Route::post('ar-invoices/{arInvoice}/pay', [ArInvoiceController::class, 'pay']);
+            Route::get('ar-aging', [ArInvoiceController::class, 'aging']);
+
+            // accounts payable
+            Route::get('ap-invoices', [ApInvoiceController::class, 'index']);
+            Route::post('ap-invoices', [ApInvoiceController::class, 'store']);
+            Route::get('ap-invoices/{apInvoice}', [ApInvoiceController::class, 'show']);
+            Route::post('ap-invoices/{apInvoice}/pay', [ApInvoiceController::class, 'pay']);
+            Route::get('ap-aging', [ApInvoiceController::class, 'aging']);
 
             // audit
             Route::get('audit-logs', [AuditLogController::class, 'index']);
