@@ -1,5 +1,6 @@
 <?php
 
+use Database\Seeders\IndustrySeeder;
 use Database\Seeders\PermissionSeeder;
 use Database\Seeders\SubscriptionPlanSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -23,6 +24,7 @@ pest()->extend(TestCase::class)
 beforeEach(function () {
     $this->seed(PermissionSeeder::class);
     $this->seed(SubscriptionPlanSeeder::class);
+    $this->seed(IndustrySeeder::class);
 })->in('Feature');
 
 /*

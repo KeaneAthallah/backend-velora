@@ -41,9 +41,8 @@ class AdminSubscriptionController extends Controller
             $plan = $request->input('plan');
             $query->whereHas('subscription.plan', fn ($builder) => $builder->where('slug', $plan));
         }
-        if ($request->filled('q')) {
-            $term = '%'.$request->input('q').'%';
-            $query->where(fn ($builder) => $builder->where('name', 'like', $term)->orWhere('slug', 'like', $term));
+        if ($request->filled('industry')) {
+            $query->where('industry', $request->input('industry'));
         }
 
         $businesses = $query->orderByDesc('id')->paginate((int) $request->input('per_page', 20));
@@ -421,6 +420,7 @@ class AdminSubscriptionController extends Controller
             'id' => (string) $business->id,
             'name' => $business->name,
             'slug' => $business->slug,
+            'industry' => $business->industry,
             'business_status' => $business->status,
             'created_at' => $business->created_at?->toIso8601String(),
             'subscription' => $subscription ? [

@@ -4,6 +4,7 @@ namespace App\Services\Subscription;
 
 use App\Models\Plan;
 use App\Models\PlanFeature;
+use App\Models\PlanIndustryFeature;
 use Illuminate\Support\Collection;
 
 class PlanService
@@ -40,10 +41,12 @@ class PlanService
                     'yearly_price' => (int) ($definition['prices']['yearly'] ?? 0),
                     'limits' => $definition['limits'] ?? [],
                     'features' => $definition['features'] ?? [],
+                    'supported_industries' => $definition['supported_industries'] ?? null,
                 ]
             );
 
             $this->syncFeatureRows($plan, $definition['features'] ?? []);
+            $this->syncIndustryFeatureRows($plan, $definition['industry_features'] ?? []);
         }
 
         $this->seeded = true;
@@ -72,10 +75,12 @@ class PlanService
                     'yearly_price' => (int) ($definition['prices']['yearly'] ?? 0),
                     'limits' => $definition['limits'] ?? [],
                     'features' => $definition['features'] ?? [],
+                    'supported_industries' => $definition['supported_industries'] ?? null,
                 ]
             );
 
             $this->syncFeatureRows($plan, $definition['features'] ?? []);
+            $this->syncIndustryFeatureRows($plan, $definition['industry_features'] ?? []);
         }
 
         $this->seeded = true;
@@ -97,6 +102,18 @@ class PlanService
         }
     }
 
+    private function syncIndustryFeatureRows(Plan $plan, array $industryFeatures): void
+    {
+        foreach ($industryFeatures as $industry => $features) {
+            foreach ($features as $key => $enabled) {
+                PlanIndustryFeature::firstOrCreate(
+                    ['plan_id' => $plan->id, 'industry' => $industry, 'feature_key' => $key],
+                    ['enabled' => (bool) $enabled]
+                );
+            }
+        }
+    }
+
     public function findBySlug(string $slug): ?Plan
     {
         $this->ensureSeeded();
@@ -110,14 +127,20 @@ class PlanService
     }
 
     /** @return Collection<int, Plan> */
-    public function publicPlans(): Collection
+    public function publicPlans(?string $industry = null): Collection
     {
         $this->ensureSeeded();
 
-        return Plan::where('is_active', true)
-            ->where('is_public', true)
-            ->orderBy('sort_order')
-            ->get();
+        $query = Plan::where('is_active', true)
+            ->where('is_public', true);
+
+        $plans = $query->orderBy('sort_order')->get();
+
+        if ($industry) {
+            $plans = $plans->filter(fn (Plan $plan) => $plan->supportsIndustry($industry))->values();
+        }
+
+        return $plans;
     }
 
     /** @return Collection<int, Plan> */
@@ -132,9 +155,9 @@ class PlanService
      * Pricing page payload: plans plus a feature-by-feature comparison grouped
      * by the catalogue's group label.
      */
-    public function pricingPayload(): array
+    public function pricingPayload(?string $industry = null): array
     {
-        $plans = $this->publicPlans();
+        $plans = $this->publicPlans($industry);
         $catalog = config('subscriptions.feature_catalog', []);
         $groups = [];
 
@@ -142,7 +165,7 @@ class PlanService
             $groups[$meta['group']][] = [
                 'key' => $key,
                 'label' => $meta['label'],
-                'plans' => $plans->mapWithKeys(fn (Plan $plan) => [$plan->slug => $plan->featureEnabled($key)])->all(),
+                'plans' => $plans->mapWithKeys(fn (Plan $plan) => [$plan->slug => $plan->featureEnabledFor($key, $industry)])->all(),
             ];
         }
 
@@ -155,6 +178,7 @@ class PlanService
                 ->values()
                 ->all(),
             'limits' => $this->limitRows($plans),
+            'industry' => $industry,
         ];
     }
 

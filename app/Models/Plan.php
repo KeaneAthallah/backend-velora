@@ -14,7 +14,7 @@ class Plan extends Model
     protected $fillable = [
         'slug', 'name', 'description', 'sort_order', 'is_public', 'is_active',
         'trial_days', 'currency', 'monthly_price', 'yearly_price',
-        'limits', 'features', 'metadata',
+        'limits', 'features', 'metadata', 'supported_industries',
     ];
 
     protected function casts(): array
@@ -28,12 +28,18 @@ class Plan extends Model
             'limits' => 'array',
             'features' => 'array',
             'metadata' => 'array',
+            'supported_industries' => 'array',
         ];
     }
 
     public function features()
     {
         return $this->hasMany(PlanFeature::class, 'plan_id');
+    }
+
+    public function planIndustryFeatures()
+    {
+        return $this->hasMany(PlanIndustryFeature::class, 'plan_id');
     }
 
     public function subscriptions()
@@ -50,6 +56,33 @@ class Plan extends Model
         }
 
         return (bool) $this->features()->where('feature_key', $key)->where('enabled', true)->exists();
+    }
+
+    public function supportsIndustry(?string $industry): bool
+    {
+        $supported = $this->supported_industries;
+
+        if (empty($supported)) {
+            return true; // null/empty = all industries
+        }
+
+        return in_array($industry, $supported, true);
+    }
+
+    public function featureEnabledFor(string $key, ?string $industry = null): bool
+    {
+        if ($industry) {
+            $override = $this->planIndustryFeatures()
+                ->where('industry', $industry)
+                ->where('feature_key', $key)
+                ->first();
+
+            if ($override) {
+                return (bool) $override->enabled;
+            }
+        }
+
+        return $this->featureEnabled($key);
     }
 
     public function limit(string $metric): ?int

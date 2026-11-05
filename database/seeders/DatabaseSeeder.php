@@ -16,6 +16,7 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         $this->call(SubscriptionPlanSeeder::class);
+        $this->call(IndustrySeeder::class);
 
         // Default dev account: admin@velora.test / password
         User::factory()->create([

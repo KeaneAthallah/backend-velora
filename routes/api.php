@@ -1,7 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\V1\AdminSubscriptionController;
-use App\Http\Controllers\Api\V1\AdvancedReportController;
+use App\Http\Controllers\Api\V1\AppointmentController;
 use App\Http\Controllers\Api\V1\AuditLogController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BusinessController;
@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\V1\DeviceController;
 use App\Http\Controllers\Api\V1\DiscountController;
 use App\Http\Controllers\Api\V1\ExportController;
 use App\Http\Controllers\Api\V1\GoogleAuthController;
+use App\Http\Controllers\Api\V1\IndustryController;
 use App\Http\Controllers\Api\V1\IngredientController;
 use App\Http\Controllers\Api\V1\InventoryController;
 use App\Http\Controllers\Api\V1\KitchenController;
@@ -28,6 +29,7 @@ use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentMethodController;
 use App\Http\Controllers\Api\V1\PermissionController;
 use App\Http\Controllers\Api\V1\PlanController;
+use App\Http\Controllers\Api\V1\PriceListController;
 use App\Http\Controllers\Api\V1\ProductController;
 use App\Http\Controllers\Api\V1\PromotionController;
 use App\Http\Controllers\Api\V1\PurchaseOrderController;
@@ -37,6 +39,7 @@ use App\Http\Controllers\Api\V1\ReorderController;
 use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\SaleController;
+use App\Http\Controllers\Api\V1\ServiceController;
 use App\Http\Controllers\Api\V1\ShiftController;
 use App\Http\Controllers\Api\V1\StocktakeController;
 use App\Http\Controllers\Api\V1\StockTransferController;
@@ -46,7 +49,10 @@ use App\Http\Controllers\Api\V1\SupplierController;
 use App\Http\Controllers\Api\V1\SyncController;
 use App\Http\Controllers\Api\V1\TableController;
 use App\Http\Controllers\Api\V1\TaxRateController;
+use App\Http\Controllers\Api\V1\UnitController;
+use App\Http\Controllers\Api\V1\WarehouseController;
 use App\Http\Controllers\Api\V1\WebhookController;
+use App\Http\Controllers\Api\V1\WorkspaceController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function () {
@@ -83,6 +89,7 @@ Route::prefix('v1')->group(function () {
     // public pricing (no auth, no tenant): powers the marketing pricing page
     Route::get('plans', [PlanController::class, 'index']);
     Route::get('plans/{slug}', [PlanController::class, 'show']);
+    Route::get('industries', [IndustryController::class, 'index']);
 
     // public payment provider callback. The provider signature is verified in
     // the gateway before any record is touched, and the event id is unique.
@@ -103,6 +110,8 @@ Route::prefix('v1')->group(function () {
 
         // tenant-scoped
         Route::middleware(['tenant', 'subscription.active'])->group(function () {
+            // Workspace capability payload (industry + modules + features + terminology)
+            Route::get('workspace', [WorkspaceController::class, 'show']);
             // Subscription & billing. These stay reachable when a workspace has
             // expired: EnsureSubscriptionActive explicitly exempts this prefix.
             Route::get('subscription', [SubscriptionController::class, 'show']);
@@ -318,6 +327,22 @@ Route::prefix('v1')->group(function () {
                 ->middleware('subscription.feature:standard_export');
             Route::get('exports/inventory', [ExportController::class, 'inventory'])
                 ->middleware('subscription.feature:standard_export');
+
+            // services & appointments (barber)
+            Route::apiResource('services', ServiceController::class);
+            Route::get('appointments', [AppointmentController::class, 'index']);
+            Route::post('appointments', [AppointmentController::class, 'store']);
+            Route::put('appointments/{appointment}', [AppointmentController::class, 'update']);
+
+            // units, price lists, warehouses (distributor)
+            Route::get('units', [UnitController::class, 'index']);
+            Route::post('units', [UnitController::class, 'store']);
+            Route::post('units/convert', [UnitController::class, 'convert']);
+            Route::get('price-lists', [PriceListController::class, 'index']);
+            Route::post('price-lists', [PriceListController::class, 'store']);
+            Route::post('price-lists/{priceList}/items', [PriceListController::class, 'addItem']);
+            Route::get('warehouses', [WarehouseController::class, 'index']);
+            Route::post('warehouses', [WarehouseController::class, 'store']);
 
             // audit
             Route::get('audit-logs', [AuditLogController::class, 'index']);

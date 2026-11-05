@@ -17,7 +17,8 @@ class PlanController extends Controller
     /** Public pricing payload: no auth, no tenant context. */
     public function index(Request $request)
     {
-        $payload = $this->plans->pricingPayload();
+        $industry = $request->query('industry');
+        $payload = $this->plans->pricingPayload($industry);
         $payload['providers'] = $this->gateways->available();
 
         return $this->success($payload);

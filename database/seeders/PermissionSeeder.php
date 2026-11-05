@@ -34,6 +34,12 @@ class PermissionSeeder extends Seeder
             'settings.manage',
             'reports.view',
             'platform.admin',
+            // Industry-specific
+            'services.view', 'services.manage',
+            'appointments.view', 'appointments.create', 'appointments.manage',
+            'price_lists.view', 'price_lists.manage',
+            'warehouses.view', 'warehouses.manage',
+            'units.view', 'units.manage',
         ];
         foreach ($permissions as $p) {
             Permission::firstOrCreate(['name' => $p], ['description' => $p]);

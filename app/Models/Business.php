@@ -10,11 +10,11 @@ class Business extends Model
 {
     use HasFactory, SoftDeletes;
 
-    protected $fillable = ['name', 'slug', 'legal_name', 'tax_id', 'currency', 'timezone', 'status', 'settings'];
+    protected $fillable = ['name', 'slug', 'legal_name', 'tax_id', 'currency', 'timezone', 'status', 'settings', 'industry'];
 
     protected function casts(): array
     {
-        return ['settings' => 'array'];
+        return ['settings' => 'array', 'industry' => 'string'];
     }
 
     public function outlets()

@@ -171,7 +171,9 @@ class Subscription extends Model
 
     public function featureEnabled(string $key): bool
     {
-        return (bool) $this->plan?->featureEnabled($key);
+        $industry = $this->business?->industry;
+
+        return (bool) $this->plan?->featureEnabledFor($key, $industry);
     }
 
     public function limit(string $metric): ?int

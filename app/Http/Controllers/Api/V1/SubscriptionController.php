@@ -42,8 +42,10 @@ class SubscriptionController extends Controller
         $business = $this->business($request);
         $this->authz->requirePermission($request->user(), 'businesses.view', $business->id);
 
+        $industry = $business->industry;
+
         return $this->success([
-            'plans' => $this->plans->publicPlans()->map(fn ($plan) => $plan->toApiArray())->values()->all(),
+            'plans' => $this->plans->publicPlans($industry)->map(fn ($plan) => $plan->toApiArray())->values()->all(),
             'providers' => $this->gateways->available(),
             'current' => $this->subscriptions->snapshot($business)['plan'],
         ]);
@@ -64,6 +66,15 @@ class SubscriptionController extends Controller
         $plan = $this->plans->findBySlug($data['plan']);
         if (! $plan) {
             return $this->error('Plan not found', 404, [], 'PLAN_NOT_FOUND');
+        }
+
+        if (! $plan->supportsIndustry($business->industry)) {
+            return $this->error('Plan is not available for this industry.', 422, [], 'PLAN_INDUSTRY_MISMATCH');
+        }
+
+        // Enterprise plans are not self-serve.
+        if ($plan->slug === 'enterprise' || ($plan->metadata['pricing'] ?? null) === 'custom') {
+            return $this->error('Enterprise plans require a sales conversation.', 422, [], 'PLAN_NOT_SELF_SERVE');
         }
 
         $result = $this->billing->createCheckout(
@@ -92,6 +103,10 @@ class SubscriptionController extends Controller
         $target = $this->plans->findBySlug($data['plan']);
         if (! $target || $target->isTrialPlan()) {
             return $this->error('Choose Basic or Pro to change your plan.', 422, [], 'INVALID_PLAN');
+        }
+
+        if (! $target->supportsIndustry($business->industry)) {
+            return $this->error('Plan is not available for this industry.', 422, [], 'PLAN_INDUSTRY_MISMATCH');
         }
 
         $subscription = $this->subscriptions->forBusiness($business);

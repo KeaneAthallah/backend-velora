@@ -727,7 +727,7 @@ class SubscriptionService
             'days_remaining' => $subscription->daysRemaining(),
             'grace_ends_at' => $subscription->grace_ends_at?->toIso8601String(),
             'cancel_at_period_end' => $subscription->cancel_at_period_end,
-            'features' => $plan?->features ?? [],
+            'features' => $this->resolvedFeatures($plan, $business->industry),
             'limits' => $plan?->limits ?? [],
             'trial_reminders' => config('subscriptions.trial_reminder_days', []),
         ];
@@ -794,8 +794,8 @@ class SubscriptionService
             ],
             'plan' => $plan?->toApiArray(),
             'usage' => $usage,
-            'features' => $plan?->features ?? [],
-            'available_plans' => $this->plans->publicPlans()
+            'features' => $this->resolvedFeatures($plan, $business->industry),
+            'available_plans' => $this->plans->publicPlans($business->industry)
                 ->reject(fn (Plan $candidate) => $candidate->id === $plan?->id)
                 ->map(fn (Plan $candidate) => $candidate->toApiArray())
                 ->values()
@@ -877,6 +877,30 @@ class SubscriptionService
     /* ------------------------------------------------------------------ */
     /* Internals */
     /* ------------------------------------------------------------------ */
+
+    private function resolvedFeatures(?Plan $plan, ?string $industry): array
+    {
+        if (! $plan) {
+            return [];
+        }
+
+        $features = [];
+        $keys = array_merge(
+            array_keys($plan->features ?? []),
+            $plan->planIndustryFeatures()->where('industry', $industry)->pluck('feature_key')->all()
+        );
+        foreach (array_unique($keys) as $key) {
+            $features[$key] = (bool) $plan->featureEnabledFor($key, $industry);
+        }
+        // include industry feature keys not present
+        foreach (config('industries.feature_keys', []) as $key => $_) {
+            if (! array_key_exists($key, $features)) {
+                $features[$key] = (bool) $plan->featureEnabledFor($key, $industry);
+            }
+        }
+
+        return $features;
+    }
 
     private function upgradeTarget(Subscription $subscription): ?array
     {
