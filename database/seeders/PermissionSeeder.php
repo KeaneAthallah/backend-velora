@@ -34,6 +34,10 @@ class PermissionSeeder extends Seeder
             'settings.manage',
             'reports.view',
             'platform.admin',
+            // Finance
+            'accounts.view', 'accounts.manage',
+            'journal.view', 'journal.manage',
+            'financial_reports.view',
             // Industry-specific
             'services.view', 'services.manage',
             'appointments.view', 'appointments.create', 'appointments.manage',

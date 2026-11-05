@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\V1\AccountController;
 use App\Http\Controllers\Api\V1\AdminSubscriptionController;
 use App\Http\Controllers\Api\V1\AppointmentController;
 use App\Http\Controllers\Api\V1\AuditLogController;
@@ -17,6 +18,7 @@ use App\Http\Controllers\Api\V1\GoogleAuthController;
 use App\Http\Controllers\Api\V1\IndustryController;
 use App\Http\Controllers\Api\V1\IngredientController;
 use App\Http\Controllers\Api\V1\InventoryController;
+use App\Http\Controllers\Api\V1\JournalEntryController;
 use App\Http\Controllers\Api\V1\KitchenController;
 use App\Http\Controllers\Api\V1\LoyaltyController;
 use App\Http\Controllers\Api\V1\MeController;
@@ -343,6 +345,19 @@ Route::prefix('v1')->group(function () {
             Route::post('price-lists/{priceList}/items', [PriceListController::class, 'addItem']);
             Route::get('warehouses', [WarehouseController::class, 'index']);
             Route::post('warehouses', [WarehouseController::class, 'store']);
+
+            // finance (chart of accounts + journal entries)
+            Route::get('accounts', [AccountController::class, 'index']);
+            Route::post('accounts', [AccountController::class, 'store']);
+            Route::put('accounts/{account}', [AccountController::class, 'update']);
+            Route::delete('accounts/{account}', [AccountController::class, 'destroy']);
+            Route::get('journal-entries', [JournalEntryController::class, 'index']);
+            Route::post('journal-entries', [JournalEntryController::class, 'store']);
+            Route::get('journal-entries/{journalEntry}', [JournalEntryController::class, 'show']);
+            Route::post('journal-entries/{journalEntry}/post', [JournalEntryController::class, 'post']);
+            Route::post('journal-entries/{journalEntry}/reverse', [JournalEntryController::class, 'reverse']);
+            Route::get('trial-balance', [JournalEntryController::class, 'trialBalance']);
+            Route::get('general-ledger', [JournalEntryController::class, 'generalLedger']);
 
             // audit
             Route::get('audit-logs', [AuditLogController::class, 'index']);
