@@ -186,6 +186,115 @@ Permission: `sales.create`.
 
 The snapshot deliberately carries the register's catalogue for anyone who can sell, so a cashier without `menu.view` can still take orders; the menu back office stays gated. Queued sales are replayed through the normal `POST /sales` call, whose `idempotency_key` makes a retry return the existing sale instead of charging twice — no separate sync push endpoint is needed.
 
+## Advanced analytics
+Permissions: `analytics.view` (read/export), `analytics.manage` (saved reports). All ranges default to the current month, accept `from`/`to`, and honour `outlet_id`. Money is always a 4-dp string.
+
+- GET `/analytics/comparison?compare=previous_period|previous_year` — current vs previous `revenue`, `orders`, `average_order_value`, `gross_profit`, `discounts`, `tax`, `refunds`, each with `change_percent` (null when there is no base).
+- GET `/analytics/products?limit=100` — per product: quantity, orders, revenue, cost, discounts, margin, margin %, revenue share, daily velocity and `abc_class` (A ≤ 80% cumulative revenue, B ≤ 95%, C after). Also returns `services` (appointments booked/completed and estimated service revenue).
+- GET `/analytics/operational` — orders by status/type/hour, open orders, average order value, average prep minutes and low-stock count.
+- GET `/analytics/financial` — revenue, COGS, gross profit, operating expenses (from `financial_transactions`), other income, net profit, tax, refunds, cash collected, AR/AP outstanding and gross margin %.
+- GET `/analytics/export/{type}?format=csv|excel|pdf` — ad-hoc export of one of the four report types above.
+
+### Saved reports
+- GET `/saved-reports?type=…`, POST `/saved-reports` — `{ name, type, filters?, columns?, format?, schedule?, schedule_time?, recipients?, is_shared? }`. Types are `comparison`, `product_analytics`, `operational`, `financial`; formats `csv`, `excel`, `pdf`; schedules `none`, `daily`, `weekly`, `monthly`.
+- PUT/DELETE `/saved-reports/{savedReport}`.
+- POST `/saved-reports/{savedReport}/run` — builds the table now, writes a `report_runs` row (`status`, `row_count`, `started_at`, `finished_at`) and advances `next_run_at`.
+- GET `/saved-reports/{savedReport}/runs` — run history.
+- GET `/saved-reports/{savedReport}/download?format=csv|excel|pdf&from=…&to=…&outlet_id=…` — download. Excel is SpreadsheetML (`.xls`) and the PDF is generated in-process, so no extra extension or package is needed.
+- `php artisan reports:deliver-due` runs due schedules (scheduled hourly in `routes/console.php`) and marks the run delivered.
+
+## Storefront (e-commerce)
+Admin permissions: `storefront.view`, `storefront.manage`, `storefront.orders`, plus `deliveries.manage` to dispatch. Public endpoints are unauthenticated; carts are addressed by an opaque token (`?token=` or `X-Cart-Token`).
+
+- GET/POST `/storefronts`, GET/PUT/DELETE `/storefronts/{storefront}` — `{ name, slug, outlet_id?, domain?, currency?, description?, theme?, settings?, is_active? }`. `settings` carries `delivery_fee`, `tax_rate`, `min_order`, `delivery_enabled`, `pickup_enabled` and `payment_methods`.
+- POST `/storefronts/{storefront}/publish|unpublish`.
+- PUT `/storefronts/{storefront}/items` — replace the published catalogue: `{ items: [{ product_id, is_visible?, price_override?, sort_order? }] }`. Rows missing from the payload are removed.
+- GET `/storefronts/{storefront}/orders?status=…` — paginated online orders; GET `/storefront-orders/{storefrontOrder}` for the full record.
+- POST `/storefront-orders/{storefrontOrder}/status` — `{ status, message? }` through `pending → confirmed → preparing → ready → out_for_delivery → delivered` (or `completed` for pickup, `cancelled` before dispatch). Delivered/completed finalises the linked sale, deducts stock and records payment; cancelling releases the reservation and voids the draft sale.
+- POST `/storefront-orders/{storefrontOrder}/payment` — `{ method?, reference? }` manual settlement.
+- POST `/storefront-orders/{storefrontOrder}/delivery` — creates (or returns) the active delivery job.
+
+Public surface:
+- GET `/public/storefronts/{slug}` — storefront + published items with resolved price and available stock.
+- POST `/public/storefronts/{slug}/cart` → cart token; GET `…/cart?token=`; POST `…/cart/items`; PUT/DELETE `…/cart/items/{productId}`.
+- POST `/public/storefronts/{slug}/checkout` — `{ token, fulfilment_type: delivery|pickup, customer_name, customer_phone?, customer_email?, payment_method?, delivery_zone_id?, delivery_address?, notes?, scheduled_at? }`. Prices come from the storefront/cart snapshot, delivery fee from the zone or storefront settings, tax from `settings.tax_rate`. Checkout writes a draft sale, reserves tracked stock and creates a delivery for delivery orders.
+- GET `/public/storefronts/{slug}/orders/{number}?token=…` — tracking timeline. The token returned at checkout is required.
+- POST `/public/storefronts/{slug}/account/register|login` — shopper account (Sanctum token); GET `…/account` with that token lists the shopper's orders.
+
+## Delivery & logistics
+Permissions: `deliveries.view|manage` for jobs, `fleet.view|manage` for zones, drivers and vehicles.
+
+- GET/POST `/delivery-zones`, PUT/DELETE `/delivery-zones/{deliveryZone}` — `{ name, outlet_id?, code?, fee?, min_order?, max_distance_km?, postcodes?, is_active? }`.
+- GET/POST `/drivers`, PUT/DELETE `/drivers/{driver}` — drivers are soft-deactivated on DELETE; status is `available|on_delivery|off_duty`.
+- GET/POST `/vehicles`, PUT/DELETE `/vehicles/{vehicle}` — plate numbers are unique per business.
+- GET `/deliveries?status=…&driver_id=…&outlet_id=…&from=…&to=…`; GET `/deliveries/{delivery}`.
+- POST `/deliveries` — `{ outlet_id, sale_id?, storefront_order_id?, delivery_zone_id?, recipient_name?, recipient_phone?, address?, fee?, distance_km?, sequence?, scheduled_at?, notes? }`. Lines are copied from the sale; fee defaults to the zone fee.
+- GET `/deliveries/board?date=YYYY-MM-DD&outlet_id=…` — dispatch board with unassigned/in-progress/delivered counts and total fees.
+- POST `/deliveries/{delivery}/assign` — `{ driver_id?, vehicle_id? }`; assigns and marks the driver/vehicle busy.
+- POST `/deliveries/{delivery}/status` — `{ status, note?, latitude?, longitude? }` through `pending → scheduled|assigned → picked_up → in_transit → delivered` (or `failed`/`cancelled`). Each step writes a `delivery_events` row; dispatching/delivering also advances a linked storefront order when its state allows it.
+- POST `/deliveries/{delivery}/proof` — `{ recipient_name?, photo_url?, signature?, notes?, collected_amount? }`; records proof and marks the job delivered.
+- POST `/deliveries/{delivery}/partial` — `{ items: [{ delivery_line_id? | sale_item_id?, quantity }] }`; marks the delivered portion and creates a follow-up job with the remainder.
+- POST `/deliveries/{delivery}/reconcile` — `{ collected_amount, notes? }` once delivered; stamps `reconciled_at`/`reconciled_by`.
+
+## Platform administration
+Platform-admin only (`users.is_platform_admin`, 403 otherwise). Routes live under `/admin` outside the tenant middleware because one administrator manages every business.
+
+- GET `/admin/dashboard` — businesses (total/active/new this month and counts per subscription status), users, commerce this month (sales, revenue, paid invoices, MRR) and health (open tickets, failed webhooks and payment callbacks in the last 24 h, past-due subscriptions), plus the eight newest signups.
+- GET `/admin/tenants?q=…&status=…&industry=…&plan=…&subscription_status=…` — tenant directory with outlet/member/invoice counts and subscription summary.
+- GET `/admin/tenants/{business}` — one tenant: profile, subscription, lifetime sales, outlets, recent tickets and audit entries.
+- GET `/admin/monitoring` — recent failed webhook deliveries and payment webhooks, past-due subscriptions, top audit actions in 24 h and row counts.
+- GET `/admin/settings`, PUT `/admin/settings` — `{ settings: { key: value } }` over the `platform_settings` store. GET also returns the defaults from `config/platform.php`.
+- GET `/admin/tickets?status=…&priority=…&q=…` — every tenant ticket plus per-status counts; GET `/admin/tickets/{ticket}`.
+- POST `/admin/tickets/{ticket}/reply` — `{ body, attachments?, status? }`; defaults the status to `pending` and notifies the ticket creator.
+- PUT `/admin/tickets/{ticket}` — `{ status?, priority?, assigned_to? }`; `closed` stamps `closed_at`, any other status clears it.
+
+### Support tickets (tenant side)
+Permissions: `support.view`, `support.manage`.
+
+- GET/POST `/support/tickets` — `{ subject, category?, priority?, body, attachments? }`; the number defaults to `TKT-XXXXXXXX`. Platform admins receive an in-app notification.
+- GET `/support/tickets/{ticket}` — ticket plus the full message thread.
+- POST `/support/tickets/{ticket}/reply` — `{ body, attachments? }`; reopened tickets return to `open`; resolved or closed tickets reject replies with `422 TICKET_CLOSED`.
+
+## API keys
+Permissions: `api_keys.view`, `api_keys.manage`.
+
+- GET `/api-keys` — prefixes only, never the secret or hash.
+- POST `/api-keys` — `{ name, scopes?: [read|write], rate_limit?, expires_at? }`. The response carries `key` (plaintext) **once**.
+- PUT/DELETE `/api-keys/{apiKey}` — rename, re-scope, re-limit or revoke (`revoked_at`).
+- POST `/api-keys/{apiKey}/rotate` — new secret, old one stops working immediately.
+
+A key is sent as `X-API-Key: vlr_…` (or `Authorization: Bearer vlr_…`) and can be used on any tenant endpoint a bearer token can. It authenticates as the user who created it, so permissions and tenant scoping are unchanged, but the business is pinned to the key's business — a caller cannot widen it with `X-Business-Id`. Keys are stored only as a SHA-256 hash. Read-only keys (`scopes: [read]`) reject writes with 403; each key enforces its own `rate_limit` per minute (429 when exceeded). Expired or revoked keys return 401.
+
+## Webhooks
+Permissions: `webhooks.view`, `webhooks.manage`.
+
+- GET `/webhooks/endpoints` — endpoints plus the supported `events`.
+- POST `/webhooks/endpoints` — `{ name, url, events?: […], description?, is_active? }`. An empty `events` list subscribes to everything; the signing `secret` is returned once.
+- PUT/DELETE `/webhooks/endpoints/{webhookEndpoint}`; DELETE removes its delivery log.
+- POST `/webhooks/endpoints/{webhookEndpoint}/rotate-secret`.
+- POST `/webhooks/endpoints/{webhookEndpoint}/test` — sends `webhook.test` and records the delivery.
+- GET `/webhooks/deliveries?status=pending|delivered|failed&endpoint_id=…&event=…` — paginated log.
+- POST `/webhooks/deliveries/{webhookDelivery}/retry`.
+
+Events: `sale.completed`, `sale.voided`, `order.created`, `order.status_changed`, `payment.recorded`, `inventory.low_stock`, `subscription.updated`. `sale.completed` and `sale.voided` are dispatched from the sales endpoints today; other events can be dispatched through `WebhookService::dispatch()`.
+
+Each request is `POST` with a JSON body `{ id, event, business_id, occurred_at, data }` and headers `X-Velora-Event`, `X-Velora-Delivery` and `X-Velora-Signature: t=<unix>,v1=<hex>`. Verify with `hash_hmac('sha256', "<t>.<raw body>", secret)` and reject stale timestamps. Failures are logged with the response status/body, back off at 1/5/15/60 minutes and can be retried manually. A broken endpoint never fails the sale that triggered it.
+
+## Notification centre
+No extra permission: a user only ever sees their own inbox (scoped to their businesses).
+
+- GET `/notifications?unread_only=1&type=…` — paginated list plus `unread_count`.
+- GET `/notifications/unread-count`, POST `/notifications/read-all`.
+- POST `/notifications/{notification}/read`, DELETE `/notifications/{notification}`.
+
+## Documents
+Permissions: `documents.view`, `documents.manage`.
+
+- GET `/documents?type=…&outlet_id=…&q=…` — metadata and a `download_url`.
+- POST `/documents` — multipart `file` (max 10 MB) with optional `name`, `type`, `outlet_id`, `description`, `metadata`. Files land on the `local` disk under `documents/{business_id}`.
+- GET `/documents/{document}/download` — streams the file.
+- DELETE `/documents/{document}` — deletes the row and the stored file.
+
 ## Response format
 Success: `{ "success": true, "message": "...", "data": {}, "meta": {} }`
 Error: `{ "success": false, "message": "...", "errors": {}, "code": "...", "request_id": "..." }`

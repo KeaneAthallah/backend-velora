@@ -2,6 +2,9 @@
 
 use App\Http\Controllers\Api\V1\AccountController;
 use App\Http\Controllers\Api\V1\AdminSubscriptionController;
+use App\Http\Controllers\Api\V1\AdvancedReportController;
+use App\Http\Controllers\Api\V1\AnalyticsController;
+use App\Http\Controllers\Api\V1\ApiKeyController;
 use App\Http\Controllers\Api\V1\ApInvoiceController;
 use App\Http\Controllers\Api\V1\AppointmentController;
 use App\Http\Controllers\Api\V1\ArInvoiceController;
@@ -15,12 +18,15 @@ use App\Http\Controllers\Api\V1\ChannelController;
 use App\Http\Controllers\Api\V1\ChannelWebhookController;
 use App\Http\Controllers\Api\V1\CustomerController;
 use App\Http\Controllers\Api\V1\CustomerGroupController;
+use App\Http\Controllers\Api\V1\DeliveryController;
 use App\Http\Controllers\Api\V1\DepartmentController;
 use App\Http\Controllers\Api\V1\DeviceController;
 use App\Http\Controllers\Api\V1\DiscountController;
+use App\Http\Controllers\Api\V1\DocumentController;
 use App\Http\Controllers\Api\V1\EmployeeProfileController;
 use App\Http\Controllers\Api\V1\ExportController;
 use App\Http\Controllers\Api\V1\FinancialTransactionController;
+use App\Http\Controllers\Api\V1\FleetController;
 use App\Http\Controllers\Api\V1\GoogleAuthController;
 use App\Http\Controllers\Api\V1\IndustryController;
 use App\Http\Controllers\Api\V1\IngredientController;
@@ -33,12 +39,14 @@ use App\Http\Controllers\Api\V1\MeController;
 use App\Http\Controllers\Api\V1\MembershipController;
 use App\Http\Controllers\Api\V1\MenuController;
 use App\Http\Controllers\Api\V1\ModifierGroupController;
+use App\Http\Controllers\Api\V1\NotificationController;
 use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Api\V1\OutletController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentMethodController;
 use App\Http\Controllers\Api\V1\PermissionController;
 use App\Http\Controllers\Api\V1\PlanController;
+use App\Http\Controllers\Api\V1\PlatformController;
 use App\Http\Controllers\Api\V1\PositionController;
 use App\Http\Controllers\Api\V1\PriceListController;
 use App\Http\Controllers\Api\V1\ProductController;
@@ -50,14 +58,18 @@ use App\Http\Controllers\Api\V1\ReorderController;
 use App\Http\Controllers\Api\V1\ReportController;
 use App\Http\Controllers\Api\V1\RoleController;
 use App\Http\Controllers\Api\V1\SaleController;
+use App\Http\Controllers\Api\V1\SavedReportController;
 use App\Http\Controllers\Api\V1\ServiceController;
 use App\Http\Controllers\Api\V1\ShiftController;
 use App\Http\Controllers\Api\V1\StocktakeController;
 use App\Http\Controllers\Api\V1\StockTransferController;
+use App\Http\Controllers\Api\V1\StorefrontController;
+use App\Http\Controllers\Api\V1\StorefrontShopController;
 use App\Http\Controllers\Api\V1\SubscriptionController;
 use App\Http\Controllers\Api\V1\SubscriptionWebhookController;
 use App\Http\Controllers\Api\V1\SupplierController;
 use App\Http\Controllers\Api\V1\SupplierQuotationController;
+use App\Http\Controllers\Api\V1\SupportTicketController;
 use App\Http\Controllers\Api\V1\SyncController;
 use App\Http\Controllers\Api\V1\TableController;
 use App\Http\Controllers\Api\V1\TaxRateController;
@@ -65,6 +77,7 @@ use App\Http\Controllers\Api\V1\UnitController;
 use App\Http\Controllers\Api\V1\WarehouseController;
 use App\Http\Controllers\Api\V1\WarehouseZoneController;
 use App\Http\Controllers\Api\V1\WebhookController;
+use App\Http\Controllers\Api\V1\WebhookEndpointController;
 use App\Http\Controllers\Api\V1\WorkspaceController;
 use Illuminate\Support\Facades\Route;
 
@@ -104,12 +117,33 @@ Route::prefix('v1')->group(function () {
     Route::get('plans/{slug}', [PlanController::class, 'show']);
     Route::get('industries', [IndustryController::class, 'index']);
 
+    // public storefront (e-commerce). Carts are addressed by an opaque token,
+    // so no tenant header or login is involved. Writes are throttled tighter
+    // than reads.
+    Route::prefix('public/storefronts/{slug}')->group(function () {
+        Route::get('/', [StorefrontShopController::class, 'show'])->middleware('throttle:60,1');
+        Route::post('cart', [StorefrontShopController::class, 'createCart'])->middleware('throttle:20,1');
+        Route::get('cart', [StorefrontShopController::class, 'showCart'])->middleware('throttle:60,1');
+        Route::post('cart/items', [StorefrontShopController::class, 'addItem'])->middleware('throttle:30,1');
+        Route::put('cart/items/{productId}', [StorefrontShopController::class, 'updateItem'])->middleware('throttle:30,1');
+        Route::delete('cart/items/{productId}', [StorefrontShopController::class, 'removeItem'])->middleware('throttle:30,1');
+        Route::post('checkout', [StorefrontShopController::class, 'checkout'])->middleware('throttle:10,1');
+        Route::get('orders/{number}', [StorefrontShopController::class, 'track'])->middleware('throttle:60,1');
+        Route::post('account/register', [StorefrontShopController::class, 'register'])->middleware('throttle:10,1');
+        Route::post('account/login', [StorefrontShopController::class, 'login'])->middleware('throttle:10,1');
+        Route::middleware(['auth:sanctum', 'throttle:30,1'])
+            ->get('account', [StorefrontShopController::class, 'account']);
+    });
+
     // public payment provider callback. The provider signature is verified in
     // the gateway before any record is touched, and the event id is unique.
     Route::post('subscription/webhooks/{provider}', [SubscriptionWebhookController::class, 'handle'])
         ->middleware('throttle:subscription-webhook');
 
-    Route::middleware('auth:sanctum')->group(function () {
+    // Sanctum for people, API keys for integrations. The `api-key` guard
+    // authenticates as the key's creator, so tenant and permission rules are
+    // unchanged; only the credential differs.
+    Route::middleware(['auth:sanctum,api-key'])->group(function () {
         Route::get('me', [MeController::class, 'show']);
         Route::post('auth/logout', [AuthController::class, 'logout']);
         Route::post('auth/change-password', [AuthController::class, 'changePassword']);
@@ -330,6 +364,55 @@ Route::prefix('v1')->group(function () {
             Route::get('reports/advanced/insights', [AdvancedReportController::class, 'insights'])
                 ->middleware('subscription.feature:business_insights');
 
+            // Advanced analytics: period comparison, product/service, operational and financial.
+            Route::get('analytics/comparison', [AnalyticsController::class, 'comparison']);
+            Route::get('analytics/products', [AnalyticsController::class, 'products']);
+            Route::get('analytics/operational', [AnalyticsController::class, 'operational']);
+            Route::get('analytics/financial', [AnalyticsController::class, 'financial']);
+            Route::get('analytics/export/{type}', [AnalyticsController::class, 'export']);
+
+            // Saved report definitions, execution, history and downloads.
+            Route::apiResource('saved-reports', SavedReportController::class)
+                ->parameters(['saved-reports' => 'savedReport']);
+            Route::post('saved-reports/{savedReport}/run', [SavedReportController::class, 'run']);
+            Route::get('saved-reports/{savedReport}/runs', [SavedReportController::class, 'runs']);
+            Route::get('saved-reports/{savedReport}/download', [SavedReportController::class, 'download']);
+
+            // E-commerce storefronts and their orders (admin surface).
+            Route::apiResource('storefronts', StorefrontController::class);
+            Route::put('storefronts/{storefront}/items', [StorefrontController::class, 'syncItems']);
+            Route::post('storefronts/{storefront}/publish', [StorefrontController::class, 'publish']);
+            Route::post('storefronts/{storefront}/unpublish', [StorefrontController::class, 'unpublish']);
+            Route::get('storefronts/{storefront}/orders', [StorefrontController::class, 'orders']);
+            Route::get('storefront-orders/{storefrontOrder}', [StorefrontController::class, 'order']);
+            Route::post('storefront-orders/{storefrontOrder}/status', [StorefrontController::class, 'orderStatus']);
+            Route::post('storefront-orders/{storefrontOrder}/payment', [StorefrontController::class, 'orderPayment']);
+            Route::post('storefront-orders/{storefrontOrder}/delivery', [StorefrontController::class, 'orderDelivery']);
+
+            // Delivery & logistics.
+            Route::get('deliveries/board', [DeliveryController::class, 'board']);
+            Route::get('deliveries', [DeliveryController::class, 'index']);
+            Route::post('deliveries', [DeliveryController::class, 'store']);
+            Route::get('deliveries/{delivery}', [DeliveryController::class, 'show']);
+            Route::post('deliveries/{delivery}/assign', [DeliveryController::class, 'assign']);
+            Route::post('deliveries/{delivery}/status', [DeliveryController::class, 'status']);
+            Route::post('deliveries/{delivery}/proof', [DeliveryController::class, 'proof']);
+            Route::post('deliveries/{delivery}/partial', [DeliveryController::class, 'partial']);
+            Route::post('deliveries/{delivery}/reconcile', [DeliveryController::class, 'reconcile']);
+
+            Route::get('delivery-zones', [FleetController::class, 'zones']);
+            Route::post('delivery-zones', [FleetController::class, 'storeZone']);
+            Route::put('delivery-zones/{deliveryZone}', [FleetController::class, 'updateZone']);
+            Route::delete('delivery-zones/{deliveryZone}', [FleetController::class, 'destroyZone']);
+            Route::get('drivers', [FleetController::class, 'drivers']);
+            Route::post('drivers', [FleetController::class, 'storeDriver']);
+            Route::put('drivers/{driver}', [FleetController::class, 'updateDriver']);
+            Route::delete('drivers/{driver}', [FleetController::class, 'destroyDriver']);
+            Route::get('vehicles', [FleetController::class, 'vehicles']);
+            Route::post('vehicles', [FleetController::class, 'storeVehicle']);
+            Route::put('vehicles/{vehicle}', [FleetController::class, 'updateVehicle']);
+            Route::delete('vehicles/{vehicle}', [FleetController::class, 'destroyVehicle']);
+
             // CSV exports. Standard columns are available on every plan;
             // `?advanced=1` requires the advanced_export feature.
             Route::get('exports/sales', [ExportController::class, 'sales'])
@@ -434,6 +517,42 @@ Route::prefix('v1')->group(function () {
 
             // webhooks (payment)
             Route::post('webhooks/payment/{provider}', [WebhookController::class, 'payment']);
+
+            // In-app notification inbox (per user, no extra permission).
+            Route::get('notifications', [NotificationController::class, 'index']);
+            Route::get('notifications/unread-count', [NotificationController::class, 'unreadCount']);
+            Route::post('notifications/read-all', [NotificationController::class, 'markAllRead']);
+            Route::post('notifications/{notification}/read', [NotificationController::class, 'markRead']);
+            Route::delete('notifications/{notification}', [NotificationController::class, 'destroy']);
+
+            // Document library (upload/download business files).
+            Route::get('documents', [DocumentController::class, 'index']);
+            Route::post('documents', [DocumentController::class, 'store']);
+            Route::get('documents/{document}/download', [DocumentController::class, 'download']);
+            Route::delete('documents/{document}', [DocumentController::class, 'destroy']);
+
+            // Machine credentials for integrations.
+            Route::get('api-keys', [ApiKeyController::class, 'index']);
+            Route::post('api-keys', [ApiKeyController::class, 'store']);
+            Route::put('api-keys/{apiKey}', [ApiKeyController::class, 'update']);
+            Route::delete('api-keys/{apiKey}', [ApiKeyController::class, 'destroy']);
+            Route::post('api-keys/{apiKey}/rotate', [ApiKeyController::class, 'rotate']);
+
+            // Outbound webhooks and their delivery log.
+            Route::get('webhooks/endpoints', [WebhookEndpointController::class, 'index']);
+            Route::post('webhooks/endpoints', [WebhookEndpointController::class, 'store']);
+            Route::put('webhooks/endpoints/{webhookEndpoint}', [WebhookEndpointController::class, 'update']);
+            Route::delete('webhooks/endpoints/{webhookEndpoint}', [WebhookEndpointController::class, 'destroy']);
+            Route::post('webhooks/endpoints/{webhookEndpoint}/rotate-secret', [WebhookEndpointController::class, 'rotateSecret']);
+            Route::post('webhooks/endpoints/{webhookEndpoint}/test', [WebhookEndpointController::class, 'test']);
+            Route::get('webhooks/deliveries', [WebhookEndpointController::class, 'deliveries']);
+            Route::post('webhooks/deliveries/{webhookDelivery}/retry', [WebhookEndpointController::class, 'retry']);
+
+            // Support tickets raised by this business.
+            Route::get('support/tickets', [SupportTicketController::class, 'index']);
+            Route::post('support/tickets', [SupportTicketController::class, 'store']);
+            Route::get('support/tickets/{ticket}', [SupportTicketController::class, 'show']);
+            Route::post('support/tickets/{ticket}/reply', [SupportTicketController::class, 'reply']);
         });
 
         // platform administration. Every action re-checks
@@ -455,6 +574,20 @@ Route::prefix('v1')->group(function () {
             Route::post('subscriptions/{business}/extend-trial', [AdminSubscriptionController::class, 'extendTrial']);
             Route::post('subscriptions/{business}/suspend', [AdminSubscriptionController::class, 'suspend']);
             Route::post('subscriptions/{business}/reactivate', [AdminSubscriptionController::class, 'reactivate']);
+
+            // Platform dashboard, tenant directory, monitoring and config.
+            Route::get('dashboard', [PlatformController::class, 'overview']);
+            Route::get('tenants', [PlatformController::class, 'tenants']);
+            Route::get('tenants/{business}', [PlatformController::class, 'tenant']);
+            Route::get('monitoring', [PlatformController::class, 'monitoring']);
+            Route::get('settings', [PlatformController::class, 'settings']);
+            Route::put('settings', [PlatformController::class, 'updateSettings']);
+
+            // Support inbox across every tenant.
+            Route::get('tickets', [SupportTicketController::class, 'adminIndex']);
+            Route::get('tickets/{ticket}', [SupportTicketController::class, 'adminShow']);
+            Route::post('tickets/{ticket}/reply', [SupportTicketController::class, 'adminReply']);
+            Route::put('tickets/{ticket}', [SupportTicketController::class, 'adminUpdate']);
         });
     });
 });

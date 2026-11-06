@@ -11,3 +11,7 @@ Artisan::command('inspire', function () {
 // Entitlement is also computed lazily on each request, so this scheduler is
 // for bulk reporting and clean status transitions, not correctness.
 Schedule::command('subscriptions:run-lifecycle')->hourly()->withoutOverlapping();
+
+// Saved reports run at their configured time. The command records the run and
+// marks delivery; the mailer transport is deployment-specific.
+Schedule::command('reports:deliver-due')->hourly()->withoutOverlapping();

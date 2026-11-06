@@ -42,6 +42,13 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+
+        // Business API keys (`X-API-Key: vlr_...`). Registered by
+        // AppServiceProvider; the key authenticates as its creator.
+        'api-key' => [
+            'driver' => 'api-key',
+            'provider' => 'users',
+        ],
     ],
 
     /*

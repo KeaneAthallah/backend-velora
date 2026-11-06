@@ -2,8 +2,13 @@
 
 namespace App\Providers;
 
+use App\Auth\ApiKeyGuard;
+use App\Models\ApiKey;
+use App\Services\ApiKeyService;
 use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
@@ -39,6 +44,19 @@ class AppServiceProvider extends ServiceProvider
             $provider = (string) $request->route('provider');
 
             return Limit::perMinute(120)->by($provider.'|'.$request->ip());
+        });
+
+        // Machine credentials: the guard applies each key's own limit, but a
+        // named limiter keeps the policy visible beside the others.
+        RateLimiter::for('api-key', function (Request $request) {
+            $key = $request->attributes->get('api_key');
+
+            return Limit::perMinute($key instanceof ApiKey ? $key->rate_limit : 60)
+                ->by($key instanceof ApiKey ? (string) $key->id : $request->ip());
+        });
+
+        Auth::extend('api-key', function (Application $app, string $name, array $config) {
+            return new ApiKeyGuard($app->make(ApiKeyService::class));
         });
     }
 }

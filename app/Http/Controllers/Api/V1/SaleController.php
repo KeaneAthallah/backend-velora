@@ -19,6 +19,7 @@ use App\Services\PromotionService;
 use App\Services\RecipeService;
 use App\Services\SaleService;
 use App\Services\Subscription\SubscriptionService;
+use App\Services\WebhookService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -35,6 +36,7 @@ class SaleController extends Controller
         protected LoyaltyService $loyalty,
         protected ChannelService $channels,
         protected SubscriptionService $subscriptions,
+        protected WebhookService $webhooks,
     ) {}
 
     public function index(Request $request)
@@ -273,6 +275,21 @@ class SaleController extends Controller
             throw $e;
         }
 
+        // Outbound webhooks are best-effort: a broken endpoint must never fail
+        // a sale that is already committed.
+        try {
+            $this->webhooks->dispatch($businessId, 'sale.completed', [
+                'sale_id' => (string) $sale->id,
+                'receipt_number' => $sale->receipt_number,
+                'order_number' => $sale->order_number,
+                'outlet_id' => (string) $sale->outlet_id,
+                'total' => (string) $sale->total,
+                'status' => $sale->status,
+            ]);
+        } catch (\Throwable) {
+            // delivery failures are recorded against the endpoint
+        }
+
         return $this->success($sale->load('items', 'payments', 'table'), 'Sale completed', 201);
     }
 
@@ -350,6 +367,16 @@ class SaleController extends Controller
             });
         } catch (\RuntimeException $e) {
             return $this->error($e->getMessage(), 422, [], 'SALE_ERROR');
+        }
+
+        try {
+            $this->webhooks->dispatch($businessId, 'sale.voided', [
+                'sale_id' => (string) $sale->id,
+                'receipt_number' => $sale->receipt_number,
+                'reason' => $data['reason'],
+            ]);
+        } catch (\Throwable) {
+            // delivery failures are recorded against the endpoint
         }
 
         return $this->success($sale->fresh()->load('items', 'payments'), 'Voided');

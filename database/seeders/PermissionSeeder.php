@@ -57,6 +57,18 @@ class PermissionSeeder extends Seeder
             'price_lists.view', 'price_lists.manage',
             'warehouses.view', 'warehouses.manage',
             'units.view', 'units.manage',
+            // Analytics
+            'analytics.view', 'analytics.manage',
+            // Commerce
+            'storefront.view', 'storefront.manage', 'storefront.orders',
+            // Delivery & logistics
+            'deliveries.view', 'deliveries.manage',
+            'fleet.view', 'fleet.manage',
+            // Platform integrations and support
+            'api_keys.view', 'api_keys.manage',
+            'webhooks.view', 'webhooks.manage',
+            'documents.view', 'documents.manage',
+            'support.view', 'support.manage',
         ];
         foreach ($permissions as $p) {
             Permission::firstOrCreate(['name' => $p], ['description' => $p]);
