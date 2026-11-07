@@ -6,12 +6,12 @@ namespace App\Services;
 
 use App\Models\Ingredient;
 use App\Models\IngredientPhotoAndUsePattern;
-use App\Models\IngredientRecipeRelation;
 use App\Models\Product;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\PurchaseOrderItemApproval;
 use App\Models\PurchaseOrderItemSuggestedSupplierParcel;
+use App\Models\RecipeIngredient;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -47,7 +47,7 @@ final class SmartReorderService
                 'trackInventory' => $ingredient->track_inventory,
                 'shelfLifeDays' => (float) ($ingredient->shelf_life_days ?? Ingredient::SHELF_LIFE_UNTRACKED),
                 'photoAndUsePatterns' => $ingredient->photoAndUsePatterns,
-                'recipes' => $ingredient->recipes->map(fn (IngredientRecipeRelation $relation) => [
+                'recipes' => $ingredient->recipes->map(fn (RecipeIngredient $relation) => [
                     'recipe' => $relation->recipe,
                     'quantityInRecipe' => (float) $relation->quantity_per_unit,
                     'unit' => $relation->unit,

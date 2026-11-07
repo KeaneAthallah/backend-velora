@@ -53,15 +53,15 @@ class EmployeeProfileController extends Controller
         return $this->success($profile, 'Profile created', 201);
     }
 
-    public function update(Request $request, EmployeeProfile $profile)
+    public function update(Request $request, EmployeeProfile $employeeProfile)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($profile->business_id !== $businessId) {
+        if ($employeeProfile->business_id !== $businessId) {
             return $this->error('Not found', 404);
         }
         $this->authz->requirePermission($request->user(), 'hr.manage', $businessId);
-        $profile->update($request->only(['department_id', 'position_id', 'employee_number', 'start_date', 'end_date', 'employment_status', 'phone', 'email', 'address', 'emergency_contact_name', 'emergency_contact_phone', 'documents', 'metadata']));
+        $employeeProfile->update($request->only(['department_id', 'position_id', 'employee_number', 'start_date', 'end_date', 'employment_status', 'phone', 'email', 'address', 'emergency_contact_name', 'emergency_contact_phone', 'documents', 'metadata']));
 
-        return $this->success($profile);
+        return $this->success($employeeProfile);
     }
 }

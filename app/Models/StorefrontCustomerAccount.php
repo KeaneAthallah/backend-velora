@@ -34,11 +34,11 @@ class StorefrontCustomerAccount extends Authenticatable
 
     public function carts()
     {
-        return $this->hasMany(Cart::class);
+        return $this->hasMany(Cart::class, 'customer_account_id');
     }
 
     public function orders()
     {
-        return $this->hasMany(StorefrontOrder::class);
+        return $this->hasMany(StorefrontOrder::class, 'customer_account_id');
     }
 }

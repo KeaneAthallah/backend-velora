@@ -30,9 +30,4 @@ class Recipe extends Model
     {
         return $this->hasMany(RecipeIngredient::class);
     }
-
-    public function ingredientRelations()
-    {
-        return $this->hasMany(IngredientRecipeRelation::class);
-    }
 }

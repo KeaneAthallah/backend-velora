@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 use App\Models\Business;
 use App\Models\Ingredient;
-use App\Models\IngredientRecipeRelation;
 use App\Models\Outlet;
 use App\Models\Product;
 use App\Models\Recipe;
+use App\Models\RecipeIngredient;
 use App\Models\Sale;
 use App\Models\SaleItem;
 use App\Models\Supplier;
@@ -77,7 +77,7 @@ it('can seed a minimal coffee shop dataset', function () {
         'name' => 'Cappuccino recipe',
         'yield_quantity' => 1,
     ]);
-    IngredientRecipeRelation::create([
+    RecipeIngredient::create([
         'recipe_id' => $recipe->id,
         'ingredient_id' => $ingredient->id,
         'quantity_per_unit' => 0.2,

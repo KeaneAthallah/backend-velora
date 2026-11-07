@@ -35,15 +35,15 @@ class WarehouseZoneController extends Controller
         return $this->success($zone, 'Zone created', 201);
     }
 
-    public function storeBin(Request $request, WarehouseZone $zone)
+    public function storeBin(Request $request, WarehouseZone $warehouseZone)
     {
         $businessId = $request->attributes->get('business_id');
-        if (! Warehouse::where('id', $zone->warehouse_id)->where('business_id', $businessId)->exists()) {
+        if (! Warehouse::where('id', $warehouseZone->warehouse_id)->where('business_id', $businessId)->exists()) {
             return $this->error('Not found', 404);
         }
         $this->authz->requirePermission($request->user(), 'warehouse_zones.manage', $businessId);
         $data = $request->validate(['code' => 'required|string|max:32', 'label' => 'nullable|string']);
-        $bin = WarehouseBin::create(array_merge($data, ['warehouse_zone_id' => $zone->id]));
+        $bin = WarehouseBin::create(array_merge($data, ['warehouse_zone_id' => $warehouseZone->id]));
 
         return $this->success($bin, 'Bin created', 201);
     }

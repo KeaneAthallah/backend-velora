@@ -50,21 +50,21 @@ class ApInvoiceController extends Controller
         return $this->success($invoice, 'Invoice created', 201);
     }
 
-    public function show(Request $request, ApInvoice $invoice)
+    public function show(Request $request, ApInvoice $apInvoice)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($invoice->business_id !== $businessId) {
+        if ($apInvoice->business_id !== $businessId) {
             return $this->error('Not found', 404);
         }
         $this->authz->requirePermission($request->user(), 'ap.view', $businessId);
 
-        return $this->success($invoice->load('supplier', 'payments'));
+        return $this->success($apInvoice->load('supplier', 'payments'));
     }
 
-    public function pay(Request $request, ApInvoice $invoice)
+    public function pay(Request $request, ApInvoice $apInvoice)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($invoice->business_id !== $businessId) {
+        if ($apInvoice->business_id !== $businessId) {
             return $this->error('Not found', 404);
         }
         $this->authz->requirePermission($request->user(), 'ap.manage', $businessId);
@@ -74,20 +74,16 @@ class ApInvoiceController extends Controller
             'method' => 'nullable|string|max:32',
             'reference' => 'nullable|string|max:128',
         ]);
-        $payment = ApInvoicePayment::create(array_merge($data, ['ap_invoice_id' => $invoice->id]));
-        $invoice->amount_paid = (int) $invoice->amount_paid + (int) $data['amount'];
-        if ($invoice->amount_paid >= $invoice->total) {
-            $invoice->status = 'paid';
-        } elseif ($invoice->amount_paid > 0) {
-            $invoice->status = 'partial';
+        $payment = ApInvoicePayment::create(array_merge($data, ['ap_invoice_id' => $apInvoice->id]));
+        $apInvoice->amount_paid = (int) $apInvoice->amount_paid + (int) $data['amount'];
+        if ($apInvoice->amount_paid >= $apInvoice->total) {
+            $apInvoice->status = 'paid';
+        } elseif ($apInvoice->amount_paid > 0) {
+            $apInvoice->status = 'partial';
         }
-        $invoice->save();
-        if ($invoice->supplier_id) {
-            $supplier = Supplier::find($invoice->supplier_id);
-            // supplier balance tracking not in schema; skip
-        }
+        $apInvoice->save();
 
-        return $this->success($invoice->fresh()->load('payments'), 'Payment recorded');
+        return $this->success($apInvoice->fresh()->load('payments'), 'Payment recorded');
     }
 
     public function aging(Request $request)

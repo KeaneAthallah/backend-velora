@@ -13,7 +13,7 @@ class CustomerActivityLog extends Model
 
     protected $fillable = ['business_id', 'customer_id', 'action', 'metadata', 'created_at'];
 
-    protected $timestamps = false;
+    public $timestamps = false;
 
     protected function casts(): array
     {

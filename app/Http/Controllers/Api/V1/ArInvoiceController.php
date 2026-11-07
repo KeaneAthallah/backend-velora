@@ -50,21 +50,21 @@ class ArInvoiceController extends Controller
         return $this->success($invoice, 'Invoice created', 201);
     }
 
-    public function show(Request $request, ArInvoice $invoice)
+    public function show(Request $request, ArInvoice $arInvoice)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($invoice->business_id !== $businessId) {
+        if ($arInvoice->business_id !== $businessId) {
             return $this->error('Not found', 404);
         }
         $this->authz->requirePermission($request->user(), 'ar.view', $businessId);
 
-        return $this->success($invoice->load('customer', 'payments'));
+        return $this->success($arInvoice->load('customer', 'payments'));
     }
 
-    public function pay(Request $request, ArInvoice $invoice)
+    public function pay(Request $request, ArInvoice $arInvoice)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($invoice->business_id !== $businessId) {
+        if ($arInvoice->business_id !== $businessId) {
             return $this->error('Not found', 404);
         }
         $this->authz->requirePermission($request->user(), 'ar.manage', $businessId);
@@ -74,24 +74,24 @@ class ArInvoiceController extends Controller
             'method' => 'nullable|string|max:32',
             'reference' => 'nullable|string|max:128',
         ]);
-        $payment = ArInvoicePayment::create(array_merge($data, ['ar_invoice_id' => $invoice->id]));
-        $invoice->amount_paid = (int) $invoice->amount_paid + (int) $data['amount'];
-        if ($invoice->amount_paid >= $invoice->total) {
-            $invoice->status = 'paid';
-        } elseif ($invoice->amount_paid > 0) {
-            $invoice->status = 'partial';
+        $payment = ArInvoicePayment::create(array_merge($data, ['ar_invoice_id' => $arInvoice->id]));
+        $arInvoice->amount_paid = (int) $arInvoice->amount_paid + (int) $data['amount'];
+        if ($arInvoice->amount_paid >= $arInvoice->total) {
+            $arInvoice->status = 'paid';
+        } elseif ($arInvoice->amount_paid > 0) {
+            $arInvoice->status = 'partial';
         }
-        $invoice->save();
+        $arInvoice->save();
         // update customer balance
-        if ($invoice->customer_id) {
-            $customer = Customer::find($invoice->customer_id);
+        if ($arInvoice->customer_id) {
+            $customer = Customer::find($arInvoice->customer_id);
             if ($customer) {
                 $customer->balance = max(0, (int) $customer->balance - (int) $data['amount']);
                 $customer->save();
             }
         }
 
-        return $this->success($invoice->fresh()->load('payments'), 'Payment recorded');
+        return $this->success($arInvoice->fresh()->load('payments'), 'Payment recorded');
     }
 
     public function aging(Request $request)

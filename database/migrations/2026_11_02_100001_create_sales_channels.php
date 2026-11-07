@@ -86,10 +86,12 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('sales', function (Blueprint $table) {
+            // MySQL refuses to drop an index that still backs a foreign key, so
+            // the constraint goes before the composite index.
             $table->dropUnique('sales_channel_order_ref_unique');
+            $table->dropForeign(['sales_channel_id']);
             $table->dropIndex('sales_channel_status_index');
-            $table->dropConstrainedForeignId('sales_channel_id');
-            $table->dropColumn(['channel_order_ref', 'channel_status', 'channel_commission_percent', 'channel_commission']);
+            $table->dropColumn(['sales_channel_id', 'channel_order_ref', 'channel_status', 'channel_commission_percent', 'channel_commission']);
         });
 
         Schema::dropIfExists('channel_events');

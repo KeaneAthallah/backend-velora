@@ -2,6 +2,8 @@
 
 namespace Database\Factories;
 
+use App\Models\Ingredient;
+use App\Models\Recipe;
 use App\Models\RecipeIngredient;
 use Illuminate\Database\Eloquent\Factories\Factory;
 

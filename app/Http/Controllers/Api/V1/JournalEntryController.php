@@ -94,55 +94,55 @@ class JournalEntryController extends Controller
         return $this->success($entry->load('lines.account'), 'Journal entry created', 201);
     }
 
-    public function show(Request $request, JournalEntry $entry)
+    public function show(Request $request, JournalEntry $journalEntry)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($entry->business_id !== $businessId) {
+        if ($journalEntry->business_id !== $businessId) {
             return $this->error('Not found', 404);
         }
         $this->authz->requirePermission($request->user(), 'journal.view', $businessId);
 
-        return $this->success($entry->load('lines.account'));
+        return $this->success($journalEntry->load('lines.account'));
     }
 
-    public function post(Request $request, JournalEntry $entry)
+    public function post(Request $request, JournalEntry $journalEntry)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($entry->business_id !== $businessId) {
+        if ($journalEntry->business_id !== $businessId) {
             return $this->error('Not found', 404);
         }
         $this->authz->requirePermission($request->user(), 'journal.manage', $businessId);
-        if ($entry->status !== 'draft') {
+        if ($journalEntry->status !== 'draft') {
             return $this->error('Only draft entries can be posted', 422);
         }
-        $entry->update(['status' => 'posted', 'posted_by' => $request->user()->id, 'posted_at' => now()]);
+        $journalEntry->update(['status' => 'posted', 'posted_by' => $request->user()->id, 'posted_at' => now()]);
 
-        return $this->success($entry->fresh()->load('lines.account'));
+        return $this->success($journalEntry->fresh()->load('lines.account'));
     }
 
-    public function reverse(Request $request, JournalEntry $entry)
+    public function reverse(Request $request, JournalEntry $journalEntry)
     {
         $businessId = $request->attributes->get('business_id');
-        if ($entry->business_id !== $businessId) {
+        if ($journalEntry->business_id !== $businessId) {
             return $this->error('Not found', 404);
         }
         $this->authz->requirePermission($request->user(), 'journal.manage', $businessId);
-        if ($entry->status !== 'posted') {
+        if ($journalEntry->status !== 'posted') {
             return $this->error('Only posted entries can be reversed', 422);
         }
-        $reversal = DB::transaction(function () use ($entry, $request, $businessId) {
+        $reversal = DB::transaction(function () use ($journalEntry, $request, $businessId) {
             $new = JournalEntry::create([
                 'business_id' => $businessId,
-                'outlet_id' => $entry->outlet_id,
+                'outlet_id' => $journalEntry->outlet_id,
                 'entry_date' => now()->toDateString(),
-                'description' => 'Reversal of '.($entry->number ?? $entry->id),
+                'description' => 'Reversal of '.($journalEntry->number ?? $journalEntry->id),
                 'reference_type' => 'reversal',
-                'reference_id' => $entry->id,
+                'reference_id' => $journalEntry->id,
                 'status' => 'posted',
                 'posted_by' => $request->user()->id,
                 'posted_at' => now(),
             ]);
-            foreach ($entry->lines as $line) {
+            foreach ($journalEntry->lines as $line) {
                 JournalEntryLine::create([
                     'journal_entry_id' => $new->id,
                     'account_id' => $line->account_id,
@@ -151,7 +151,7 @@ class JournalEntryController extends Controller
                     'description' => $line->description,
                 ]);
             }
-            $entry->update(['status' => 'reversed', 'reversed_by_entry_id' => $new->id]);
+            $journalEntry->update(['status' => 'reversed', 'reversed_by_entry_id' => $new->id]);
 
             return $new;
         });

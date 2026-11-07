@@ -31,11 +31,6 @@ class Ingredient extends Model
         return $this->belongsTo(Business::class);
     }
 
-    public function product()
-    {
-        return $this->belongsTo(Product::class);
-    }
-
     public function balance()
     {
         return $this->hasOne(IngredientBalance::class);

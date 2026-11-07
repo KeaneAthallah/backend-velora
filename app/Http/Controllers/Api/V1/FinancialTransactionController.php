@@ -20,11 +20,13 @@ class FinancialTransactionController extends Controller
         if ($request->filled('type')) {
             $q->where('type', $request->input('type'));
         }
+        // Date-cast column: compare calendar dates so the last day of the range
+        // is not dropped when the driver stores a time component.
         if ($request->filled('from')) {
-            $q->where('transaction_date', '>=', $request->input('from'));
+            $q->whereDate('transaction_date', '>=', $request->input('from'));
         }
         if ($request->filled('to')) {
-            $q->where('transaction_date', '<=', $request->input('to'));
+            $q->whereDate('transaction_date', '<=', $request->input('to'));
         }
 
         return $this->success($q->orderByDesc('transaction_date')->orderByDesc('id')->get());

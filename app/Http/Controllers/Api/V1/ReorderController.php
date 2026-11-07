@@ -51,7 +51,9 @@ final class ReorderController extends Controller
         }
 
         $params = Validator::validate($request->all(), [
-            'from' => 'nullable|date|before_or_equal:until|after:now',
+            // `from` is the start of the historical lookback, so it must be in
+            // the past — the old `after:now` rule rejected every valid window.
+            'from' => 'nullable|date|before_or_equal:until|before:now',
             'until' => 'nullable|date|after_or_equal:from|before_or_equal:now',
             'defaultLeadDays' => 'nullable|integer|min:1',
             'minCoverageDays' => 'nullable|integer|min:1',
@@ -75,7 +77,7 @@ final class ReorderController extends Controller
         }
 
         $params = Validator::validate($request->all(), [
-            'from' => 'nullable|date|before_or_equal:until|after:now',
+            'from' => 'nullable|date|before_or_equal:until|before:now',
             'until' => 'nullable|date|after_or_equal:from|before_or_equal:now',
             'defaultLeadDays' => 'nullable|integer|min:1',
             'minCoverageDays' => 'nullable|integer|min:1',

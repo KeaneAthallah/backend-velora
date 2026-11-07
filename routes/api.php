@@ -216,8 +216,11 @@ Route::prefix('v1')->group(function () {
 
             // catalog
             Route::apiResource('categories', CategoryController::class);
-            Route::apiResource('products', ProductController::class);
+            // `products/search` must be registered before the resource route:
+            // `products/{product}` would otherwise swallow it and 404 on a
+            // model lookup for the literal "search".
             Route::get('products/search', [ProductController::class, 'search']);
+            Route::apiResource('products', ProductController::class);
             Route::apiResource('customers', CustomerController::class);
             Route::apiResource('suppliers', SupplierController::class);
 

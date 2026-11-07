@@ -68,6 +68,11 @@ class ResolveTenant
         $request->attributes->set('membership', $membership);
 
         $outletId = $request->header('X-Outlet-Id') ?? $request->input('outlet_id');
+        if ($outletId && ! is_numeric($outletId)) {
+            // A non-numeric header reaches SQL as a string; answer 404 here
+            // instead of letting the driver decide (MySQL raises, SQLite does not).
+            return response()->json(['success' => false, 'message' => 'Outlet not found in business', 'code' => 'OUTLET_NOT_FOUND'], 404);
+        }
         if ($outletId) {
             // verify outlet belongs to business
             $outlet = Outlet::where('id', $outletId)->where('business_id', $business->id)->first();

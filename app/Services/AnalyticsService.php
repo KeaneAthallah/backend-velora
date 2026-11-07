@@ -176,16 +176,21 @@ class AnalyticsService
     {
         $sales = $this->salesMetrics($businessId, $from, $to, $outletId);
 
+        // `transaction_date` carries a time component once the `date` cast has
+        // written it, so compare calendar dates rather than raw strings — a
+        // `whereBetween` with `toDateString()` drops the final day.
         $expenses = (float) FinancialTransaction::where('business_id', $businessId)
             ->where('type', 'expense')
             ->where('status', 'posted')
-            ->whereBetween('transaction_date', [$from->toDateString(), $to->toDateString()])
+            ->whereDate('transaction_date', '>=', $from->toDateString())
+            ->whereDate('transaction_date', '<=', $to->toDateString())
             ->sum('amount');
 
         $otherIncome = (float) FinancialTransaction::where('business_id', $businessId)
             ->where('type', 'income')
             ->where('status', 'posted')
-            ->whereBetween('transaction_date', [$from->toDateString(), $to->toDateString()])
+            ->whereDate('transaction_date', '>=', $from->toDateString())
+            ->whereDate('transaction_date', '<=', $to->toDateString())
             ->sum('amount');
 
         $cashCollected = (float) Payment::where('business_id', $businessId)

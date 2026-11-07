@@ -43,7 +43,8 @@ class AttendanceController extends Controller
             'notes' => $data['notes'] ?? null,
         ]);
 
-        return $this->success($att, 'Checked in', 201);
+        // `fresh()` so null columns (check_out_at, notes) are present in the payload.
+        return $this->success($att->fresh(), 'Checked in', 201);
     }
 
     public function checkOut(Request $request, Attendance $attendance)

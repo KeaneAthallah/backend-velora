@@ -348,18 +348,25 @@ class SubscriptionService
         $subscription = $subject instanceof Subscription ? $subject : $this->forBusiness($businessId);
         [$start, $end] = $this->periodBounds();
 
-        $record = SubscriptionUsageRecord::firstOrCreate(
-            [
+        // `period_start` is a date cast, so a raw equality against
+        // `toDateString()` misses rows when the driver keeps a time component
+        // (SQLite). That miss turned into a duplicate insert against the
+        // unique index, which failed every metered request.
+        $record = SubscriptionUsageRecord::where('business_id', $businessId)
+            ->where('metric', $metric)
+            ->whereDate('period_start', $start->toDateString())
+            ->first();
+
+        if (! $record) {
+            $record = SubscriptionUsageRecord::create([
                 'business_id' => $businessId,
                 'metric' => $metric,
                 'period_start' => $start->toDateString(),
-            ],
-            [
                 'subscription_id' => $subscription->id,
                 'period_end' => $end->toDateString(),
                 'used_count' => 0,
-            ]
-        );
+            ]);
+        }
 
         $record->increment('used_count', $amount);
 
@@ -372,7 +379,7 @@ class SubscriptionService
 
         return (int) SubscriptionUsageRecord::where('business_id', $businessId)
             ->where('metric', $metric)
-            ->where('period_start', $start->toDateString())
+            ->whereDate('period_start', $start->toDateString())
             ->value('used_count');
     }
 
