@@ -85,7 +85,16 @@ class SaleController extends Controller
         }
         $this->authz->requirePermission($request->user(), 'sales.view', $businessId);
 
-        return $this->success($sale->load('items', 'payments', 'refunds', 'customer', 'table', 'salesChannel'));
+        // Refund lines travel with the sale so the UI can show what is already
+        // returned and how much of each item is still refundable.
+        return $this->success($sale->load(
+            'items',
+            'payments',
+            'refunds.items',
+            'customer',
+            'table',
+            'salesChannel',
+        ));
     }
 
     public function store(Request $request)

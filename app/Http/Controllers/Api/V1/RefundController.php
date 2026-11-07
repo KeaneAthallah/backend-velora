@@ -7,12 +7,16 @@ use App\Models\Payment;
 use App\Models\Refund;
 use App\Models\Sale;
 use App\Services\AuthorizationService;
+use App\Services\RecipeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class RefundController extends Controller
 {
-    public function __construct(protected AuthorizationService $authz) {}
+    public function __construct(
+        protected AuthorizationService $authz,
+        protected RecipeService $recipes,
+    ) {}
 
     public function index(Request $request)
     {
@@ -20,7 +24,12 @@ class RefundController extends Controller
         $this->authz->requirePermission($request->user(), 'sales.refund', $businessId);
 
         $query = Refund::where('business_id', $businessId)
-            ->with(['sale:id,receipt_number,order_number,total,status,outlet_id', 'payment:id,method,amount,status']);
+            ->with([
+                'sale:id,receipt_number,order_number,total,status,outlet_id',
+                'payment:id,method,amount,status',
+                'items:id,refund_id,sale_item_id,quantity,reason',
+                'items.saleItem:id,product_name,sku,quantity,unit_price,line_total',
+            ]);
 
         if ($request->filled('status')) {
             $query->where('status', $request->input('status'));
@@ -86,10 +95,35 @@ class RefundController extends Controller
                     $sale = Sale::whereKey($locked->sale_id)->lockForUpdate()->first();
                     if ($sale) {
                         $totalRefunded = $this->refundedTotal('sale_id', $sale->id);
-                        $sale->status = bccomp($totalRefunded, bcadd((string) $sale->total, '0', 4), 4) >= 0
-                            ? 'refunded'
-                            : 'partially_refunded';
+                        $fullyRefunded = bccomp($totalRefunded, bcadd((string) $sale->total, '0', 4), 4) >= 0;
+                        $sale->status = $fullyRefunded ? 'refunded' : 'partially_refunded';
                         $sale->save();
+
+                        // Returned lines go back to stock per line, which
+                        // covers partial refunds. An amount-only refund has no
+                        // quantities to map, so it only reverses when it covers
+                        // the whole sale.
+                        $returned = $locked->items()->get();
+
+                        if ($returned->isNotEmpty()) {
+                            $quantities = [];
+                            foreach ($returned as $line) {
+                                $quantities[$line->sale_item_id] = bcadd(
+                                    $quantities[$line->sale_item_id] ?? '0',
+                                    (string) $line->quantity,
+                                    4,
+                                );
+                            }
+
+                            $this->recipes->reverseSaleItems(
+                                $sale,
+                                $quantities,
+                                'Refund #'.$locked->id,
+                                $request->user()->id,
+                            );
+                        } elseif ($fullyRefunded) {
+                            $this->recipes->reverseForSale($sale, 'Refund #'.$locked->id, $request->user()->id);
+                        }
                     }
                 }
             });
@@ -97,7 +131,7 @@ class RefundController extends Controller
             return $this->error($e->getMessage(), 422, [], 'REFUND_ERROR');
         }
 
-        return $this->success($refund->fresh()->load('sale', 'payment'), 'Refund approved');
+        return $this->success($refund->fresh()->load('sale', 'payment', 'items.saleItem'), 'Refund approved');
     }
 
     public function reject(Request $request, Refund $refund)
@@ -115,7 +149,7 @@ class RefundController extends Controller
         $refund->approved_by = $request->user()->id;
         $refund->save();
 
-        return $this->success($refund->fresh()->load('sale', 'payment'), 'Refund rejected');
+        return $this->success($refund->fresh()->load('sale', 'payment', 'items.saleItem'), 'Refund rejected');
     }
 
     private function refundedTotal(string $column, int $id): string

@@ -18,7 +18,7 @@ Base URL: `/api/v1`
 Protected endpoints require `Authorization: Bearer <token>`. Tenant context resolved via `X-Business-Id` and optional `X-Outlet-Id` headers (or `business_id`/`outlet_id` body params). Platform admins may access any business.
 
 ## Modules
-Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers (loyalty), Loyalty programme and ledger, Promotions and redemptions, Suppliers, Inventory (balances/adjust/movements, stock transfers, stocktakes), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject), Sales Channels (online ordering, delivery partners, inbound webhook orders), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement, cash movement history), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (offline bootstrap, cursor/pull/push), Webhooks (payment/{provider}), Menu (modifier groups/options, availability, 86, dayparts).
+Businesses, Outlets, Devices, Memberships, Roles, Permissions, Categories, Products, Customers (loyalty), Loyalty programme and ledger, Promotions and redemptions, Suppliers, Inventory (balances/adjust/movements, stock transfers, stocktakes), Ingredients (balances/adjust/movements), Recipes (BOM), Tax Rates, Discounts, Sales (create/void/receipt), Orders (open tabs, kitchen flow, checkout, cancel), Floor Plan (areas, tables), Kitchen (stations, tickets, print), Payment Methods, Payments (split batches, refunds), Refunds (filter, approve, reject, item-level returns), Sales Channels (online ordering, delivery partners, inbound webhook orders), Purchase Orders (create/approve/receive), Cash Registers, Shifts (open/close/cash-movement, cash movement history), Reports (sales-summary, sales-by-product, inventory-balances, low-stock), Audit Logs, Sync (offline bootstrap, cursor/pull/push), Outbound Webhooks, Menu (modifier groups/options, availability, 86, dayparts).
 
 ## Menu, modifiers, and availability
 All paths require tenant context. Permissions: `menu.view`, `menu.manage`, `menu.availability`, `menu.dayparts`.
@@ -119,8 +119,9 @@ Payment methods belong to one business and are provisioned with six defaults: `c
 
 `POST /sales/{sale}/payments` (`sales.create`) records a batch: `{ payments: [{ method, amount, reference?, provider?, external_id? }], idempotency_key? }`. Split payments are supported. The batch must cover the remaining total (`422 PAYMENT_ERROR`); overpayment is only allowed from cash and is returned as `change_amount`, never more than the cash tendered. Unknown or inactive methods are rejected. The response is the sale with `paid_amount`, `change_amount` and `payments[]`. Replaying the same `idempotency_key` returns the rows already recorded. `POST /sales` and `POST /orders/{sale}/checkout` accept the same `payments[]` array and record it inside the sale or checkout transaction, so a payment failure rolls the whole sale back. The legacy `POST /payments` endpoint still accepts one payment for a `sale_id`.
 
-- POST `/payments/{payment}/refund` — `{ amount, reason? }` requests a refund against one payment (`sales.refund`). Pending refunds reserve their amount, so requests cannot exceed what is left.
-- GET `/refunds?status=…&sale_id=…&payment_id=…&from=…&to=…` — paginated refunds with the nested sale and payment (method and amount).
+- POST `/payments/{payment}/refund` — `{ amount?, reason?, items?: [{ sale_item_id, quantity, reason? }] }` requests a refund against one payment (`sales.refund`). Pending refunds reserve their amount, so requests cannot exceed what is left. `items` names the sale lines coming back: the amount is then optional and is priced from those lines' share of the stored line totals, and quantities are validated against what is still returnable (pending refunds already count). Lines drive the stock reversal — an amount-only refund reverses ingredients only when it covers the whole sale.
+- GET `/refunds?status=…&sale_id=…&payment_id=…&from=…&to=…` — paginated refunds with the nested sale, payment (method and amount) and `items[]` (`sale_item_id`, `quantity`, nested `sale_item` product name/SKU).
+- Approving a refund with `items` calls `RecipeService::reverseSaleItems`, which restores each returned line's ingredients, capped at what that sale still holds (so a recipe edited after the sale cannot inflate stock). Amount-only approvals keep the full-sale reversal.
 - POST `/refunds/{refund}/approve` — completes the refund and rolls `payment.status` and `sale.status` to `partially_refunded` or `refunded`. POST `/refunds/{refund}/reject` closes it as `rejected`. Only pending refunds can change (`422 REFUND_ERROR`).
 
 Voiding a completed sale marks its completed payments `refunded` so the paid ledger matches the reversed sale.
@@ -286,6 +287,7 @@ No extra permission: a user only ever sees their own inbox (scoped to their busi
 - GET `/notifications?unread_only=1&type=…` — paginated list plus `unread_count`.
 - GET `/notifications/unread-count`, POST `/notifications/read-all`.
 - POST `/notifications/{notification}/read`, DELETE `/notifications/{notification}`.
+- `inventory:scan-low-stock` (scheduled hourly `withoutOverlapping`) writes `type: inventory.low_stock` notifications for every member with `inventory.view` when an ingredient is at or below its `reorder_level`. The title names the ingredient; the body and `data.products[]` name the affected menu items and how many of each can still be produced. Re-running the same day does not repeat an alert for the same member, ingredient and outlet.
 
 ## Documents
 Permissions: `documents.view`, `documents.manage`.
@@ -294,6 +296,13 @@ Permissions: `documents.view`, `documents.manage`.
 - POST `/documents` — multipart `file` (max 10 MB) with optional `name`, `type`, `outlet_id`, `description`, `metadata`. Files land on the `local` disk under `documents/{business_id}`.
 - GET `/documents/{document}/download` — streams the file.
 - DELETE `/documents/{document}` — deletes the row and the stored file.
+
+## Reorder copilot
+Permission: `purchasing.manage`.
+
+- GET `/reorder/forecast?from=…&until=…&defaultLeadDays=7&minCoverageDays=7&forecastAt=…&models[demand]=1` — read-only. Demand comes from the legacy `recipes`/`recipe_ingredients` pair multiplied by `completed` and `partially_refunded` sale quantities in the lookback window (default 14 days); ingredients with no recipe fall back to photo/use patterns (`method: photo-demand`) or report `method: none` with a `blindSpot` note. Each ingredient carries `currentStock`, `suggestedParcels[]` (`parcelQuantity`, `parcelCost`, `unitCost` = `parcelCost ÷ parcelQuantity`, `supplierId`, `supplierName`, `supplierLeadTimeDays`, cheapest per unit first, plus a `preview` of `leadTimeDays`/`leadTimeDemand`/`targetStock`/`reorderQuantity`/`predictedStockAtReorderDate` computed with that supplier's lead time, plus `parcelsRequired`/`totalCost` for buying whole parcels of that size and `leftoverStock` (what whole parcels leave after the cover window) — the preview is null when the supplier has no lead time), `forecast.{dailyDemand,leadTimeDemand,targetStock,reorderQuantity,leadTimeDays,wasteRisk,predictedStockAtReorderDate}` and `consumption.{theoretical,soldUnits,recipeDriven}`. The response also has `purchaseMoneyBudget` priced in the business currency and `suggestedParcelsByProduct` for the gated drafting path. Nothing is written.
+- POST `/reorder/suggest`, POST `/reorder/items/{purchaseOrderItemId}/approve|reject` — answer `501 NOT_IMPLEMENTED` while `config/features.php`'s `reorder_purchase_orders` is off, because drafted PO lines would be ingredients while `purchase_order_items` is product-based.
+- `reorder_copilot` (env `FEATURES_REORDER_COPILOT`, default on) switches the forecast itself off to 501.
 
 ## Response format
 Success: `{ "success": true, "message": "...", "data": {}, "meta": {} }`

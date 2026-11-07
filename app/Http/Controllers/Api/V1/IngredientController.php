@@ -8,12 +8,16 @@ use App\Models\IngredientBalance;
 use App\Models\IngredientMovement;
 use App\Models\Outlet;
 use App\Services\AuthorizationService;
+use App\Services\RecipeService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class IngredientController extends Controller
 {
-    public function __construct(protected AuthorizationService $authz) {}
+    public function __construct(
+        protected AuthorizationService $authz,
+        protected RecipeService $recipes,
+    ) {}
 
     public function index(Request $request)
     {
@@ -248,6 +252,29 @@ class IngredientController extends Controller
         }
 
         return $this->success($query->orderBy('ingredient_id')->paginate(100));
+    }
+
+    /**
+     * Ingredient inventory dashboard: remaining/consumed/received per
+     * ingredient plus every product that shares it and how many units of each
+     * the current balance still allows.
+     */
+    public function dashboard(Request $request)
+    {
+        $businessId = $request->attributes->get('business_id');
+        $this->authz->requirePermission($request->user(), 'ingredients.view', $businessId);
+
+        $outletId = $request->attributes->get('outlet_id') ?? $request->input('outlet_id');
+        if (! $outletId) {
+            return $this->error('Outlet required', 422);
+        }
+        if (! Outlet::where('id', $outletId)->where('business_id', $businessId)->exists()) {
+            return $this->error('Not found', 404);
+        }
+
+        $ingredientId = $request->filled('ingredient_id') ? (int) $request->input('ingredient_id') : null;
+
+        return $this->success($this->recipes->ingredientUsage($businessId, (int) $outletId, $ingredientId));
     }
 
     public function movements(Request $request)

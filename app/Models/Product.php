@@ -58,4 +58,18 @@ class Product extends Model
     {
         return $this->hasMany(RecipeItem::class);
     }
+
+    public function scopeForBusiness($query, int $businessId)
+    {
+        return $query->where('business_id', $businessId);
+    }
+
+    /**
+     * Products that can still be sold — the set the reorder forecast treats as
+     * demand drivers.
+     */
+    public function scopePublished($query)
+    {
+        return $query->where('is_active', true);
+    }
 }

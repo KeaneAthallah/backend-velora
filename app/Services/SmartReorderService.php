@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Models\Business;
 use App\Models\Ingredient;
 use App\Models\IngredientPhotoAndUsePattern;
 use App\Models\Product;
@@ -37,11 +38,11 @@ final class SmartReorderService
 
         $ingredients = Ingredient::forBusiness($businessId)
             ->trackingInventory()
-            ->with('recipes.recipe.product', 'recipes.recipe.productOutletPrices')
+            ->with(['balances', 'recipes.recipe.product'])
             ->get()
             ->map(fn (Ingredient $ingredient) => [
                 'ingredient' => $ingredient,
-                'openingBalance' => $ingredient->opening_quantity,
+                'openingBalance' => $ingredient->openingQuantity(),
                 'currentStock' => $ingredient->current_stock,
                 'reorderLevel' => (float) $ingredient->reorder_level,
                 'trackInventory' => $ingredient->track_inventory,
@@ -85,6 +86,7 @@ final class SmartReorderService
             'consumption' => $consumptionsByIngredient->get($data['ingredient']->id, []),
             'forecast' => $this->forecastForIngredient(
                 $data,
+                $consumptionsByIngredient->get($data['ingredient']->id, []),
                 $salesQuantitiesByProduct,
                 $sales,
                 $forecastAt,
@@ -93,9 +95,15 @@ final class SmartReorderService
             ),
         ]);
 
-        $suggestedParcelsByProduct = $this->suggestedParcelsForBusiness($businessId);
+        // One read, grouped twice: product lines draft purchase orders, while
+        // ingredient parcels are what a forecast breakdown can name.
+        $parcels = PurchaseOrderItemSuggestedSupplierParcel::forBusiness($businessId)
+            ->with('supplier')
+            ->get();
+        $suggestedParcelsByProduct = $this->groupParcels($parcels, 'product_id');
+        $suggestedParcelsByIngredient = $this->groupParcels($parcels, 'ingredient_id');
 
-        $purchaseMoneyBudget = $this->purchaseMoneyBudget($forecastBlocks);
+        $purchaseMoneyBudget = $this->purchaseMoneyBudget($forecastBlocks, $businessId);
 
         return [
             'forecastAt' => $forecastAt->toIso8601String(),
@@ -109,24 +117,34 @@ final class SmartReorderService
                 'minCoverageDays' => $minCoverageDays,
                 'models' => $models,
             ],
-            'ingredients' => $forecastBlocks->map(fn (array $block): array => [
-                'id' => (string) $block['ingredient']->id,
-                'name' => $block['ingredient']->name,
-                'sku' => $block['ingredient']->sku,
-                'unit' => $block['ingredient']->unit,
-                'costPerUnit' => (float) $block['ingredient']->cost_per_unit,
-                'currentStock' => $block['currentStock'],
-                'reorderLevel' => $block['reorderLevel'],
-                'shelfLifeDays' => $block['shelfLifeDays'],
-                'isTracked' => $block['trackInventory'],
-                'photoPattern' => $this->photoPattern($block['photoAndUsePatterns']),
-                'leadTimeDays' => $this->effectiveLeadTimeDays(
-                    $block['ingredient'],
-                    $suggestedParcelsByProduct,
-                ),
-                'forecast' => $this->toForecastDto($block['forecast']),
-                'consumption' => $this->toConsumptionDto($block['consumption']),
-            ])->values(),
+            'ingredients' => $forecastBlocks->map(function (array $block) use ($suggestedParcelsByIngredient, $minCoverageDays): array {
+                $forecast = $this->toForecastDto($block['forecast']);
+
+                return [
+                    'id' => (string) $block['ingredient']->id,
+                    'name' => $block['ingredient']->name,
+                    'sku' => $block['ingredient']->sku,
+                    'unit' => $block['ingredient']->unit,
+                    'costPerUnit' => (float) $block['ingredient']->cost_per_unit,
+                    'currentStock' => $block['currentStock'],
+                    'reorderLevel' => $block['reorderLevel'],
+                    'shelfLifeDays' => $block['shelfLifeDays'],
+                    'isTracked' => $block['trackInventory'],
+                    'photoPattern' => $this->photoPattern($block['photoAndUsePatterns']),
+                    // Supplier parcels refine the lead time only once a parcel is
+                    // chosen: take the ingredient's own lead time here, then fall
+                    // back to the 7-day default.
+                    'leadTimeDays' => $this->effectiveLeadTimeDays($block['ingredient'], []),
+                    'suggestedParcels' => $this->withParcelPreviews(
+                        $suggestedParcelsByIngredient[(int) $block['ingredient']->id] ?? [],
+                        $block,
+                        $forecast,
+                        $minCoverageDays,
+                    ),
+                    'forecast' => $forecast,
+                    'consumption' => $this->toConsumptionDto($block['consumption']),
+                ];
+            })->values(),
             'suggestedParcelsByProduct' => $suggestedParcelsByProduct,
             'purchaseMoneyBudget' => $purchaseMoneyBudget,
         ];
@@ -253,9 +271,12 @@ final class SmartReorderService
             return collect();
         }
 
+        // `sales.status` is draft/completed/voided/refunded/partially_refunded.
+        // Voided and fully refunded sales were put back into stock, so they do
+        // not drive demand; partially refunded ones still left the door.
         return DB::table('sales')
             ->where('business_id', $businessId)
-            ->whereIn('status', ['completed', 'completed_refunded'])
+            ->whereIn('status', ['completed', 'partially_refunded'])
             ->whereBetween('completed_at', [$from, $until])
             ->join('sale_items', 'sales.id', '=', 'sale_items.sale_id')
             ->selectRaw('sale_items.product_id, SUM(sale_items.quantity) as quantity')
@@ -276,7 +297,10 @@ final class SmartReorderService
             $total = 0.0;
 
             foreach ($ingredient['recipes'] as $recipeRelation) {
-                $product = $recipeRelation['recipe']->product;
+                $product = $recipeRelation['recipe']?->product;
+                if (! $product) {
+                    continue;
+                }
                 $sold = $salesQuantitiesByProduct->get($product->id, 0.0);
                 if ($sold <= 0.0) {
                     continue;
@@ -302,6 +326,7 @@ final class SmartReorderService
 
     private function forecastForIngredient(
         array $data,
+        array $consumption,
         Collection $salesQuantitiesByProduct,
         Collection $products,
         Carbon $forecastAt,
@@ -313,6 +338,10 @@ final class SmartReorderService
             'method' => 'none',
             'dailyDemand' => 0.0,
             'leadTimeDemand' => 0.0,
+            // The DTO reads these on every path, including the early returns for
+            // untracked or out-of-stock ingredients.
+            'targetStock' => null,
+            'currentStock' => $data['currentStock'],
             'reorderQuantity' => 0.0,
             'reorderQuantityUnit' => $ingredient->unit,
             'suggestedParcelQuantity' => null,
@@ -337,9 +366,9 @@ final class SmartReorderService
             return $forecast;
         }
 
-        $recipeDriven = $data['recipes']->isNotEmpty();
-        $salesDriven = $recipeDriven
-            ? $this->recipeDrivenSales(ingredient: $data, salesQuantitiesByProduct: $salesQuantitiesByProduct, products: $products)
+        $hasRecipes = $data['recipes']->isNotEmpty();
+        $recipeTotal = $hasRecipes
+            ? $this->recipeDrivenSales($data, $salesQuantitiesByProduct, $products)
             : null;
         $photoDriven = $this->photoDrivenDemand($data);
 
@@ -347,8 +376,8 @@ final class SmartReorderService
         $method = 'none';
 
         if ($models['demand'] ?? true) {
-            if ($recipeDriven !== null && $recipeDriven > 0.0 && ($data['consumption']['recipeDriven'] ?? false)) {
-                $demandSignal = $recipeDriven;
+            if ($recipeTotal !== null && $recipeTotal > 0.0 && ($consumption['recipeDriven'] ?? false)) {
+                $demandSignal = $recipeTotal;
                 $method = 'recipe-demand';
             } elseif ($photoDriven !== null && $photoDriven > 0.0 && ($data['photoAndUsePatterns']->isNotEmpty())) {
                 $demandSignal = $photoDriven;
@@ -394,23 +423,29 @@ final class SmartReorderService
         return $forecast;
     }
 
+    /**
+     * Total ingredient units consumed by sales over the lookback window. The
+     * caller turns this into a daily rate, so do not divide here.
+     */
     private function recipeDrivenSales(array $data, Collection $salesQuantitiesByProduct, Collection $products): ?float
     {
-        $perDay = 0.0;
-        $lookbackDays = $this->lookbackDays(Carbon::now());
+        $consumed = 0.0;
 
         foreach ($data['recipes'] as $recipeRelation) {
-            $product = $recipeRelation['recipe']->product;
+            $product = $recipeRelation['recipe']?->product;
+            if (! $product) {
+                continue;
+            }
             $sold = $salesQuantitiesByProduct->get($product->id, 0.0);
             if ($sold <= 0.0) {
                 continue;
             }
             $recipeYield = (float) ($recipeRelation['recipe']->yield_quantity ?? 1);
             $perUnit = (float) $recipeRelation['quantityInRecipe'] / max(0.0001, $recipeYield);
-            $perDay += ($sold / $lookbackDays) * $perUnit;
+            $consumed += $sold * $perUnit;
         }
 
-        return $perDay > 0.0 ? $perDay : null;
+        return $consumed > 0.0 ? $consumed : null;
     }
 
     private function photoDrivenDemand(array $data): ?float
@@ -425,10 +460,11 @@ final class SmartReorderService
             return null;
         }
 
-        $lookbackDays = $this->lookbackDays(Carbon::now());
+        // `consumption_rate` is per day; the caller expects a lookback total.
         $perDay = $best->consumption_rate * $best->photo_share_estimate;
+        $consumed = $perDay * $this->lookbackDays(Carbon::now());
 
-        return $perDay > 0.0 ? $perDay : null;
+        return $consumed > 0.0 ? $consumed : null;
     }
 
     private function wasteRisk(
@@ -568,7 +604,8 @@ final class SmartReorderService
 
     private function lookbackDays(Carbon $forecastAt): int
     {
-        return $forecastAt->copy()->subDays(14)->startOfDay()->diffInDays($forecastAt->copy()->endOfDay());
+        // Carbon 3 returns a float from diffInDays; the forecast divides by this.
+        return (int) $forecastAt->copy()->subDays(14)->startOfDay()->diffInDays($forecastAt->copy()->endOfDay());
     }
 
     private function unitWord(float $quantity): string
@@ -576,21 +613,23 @@ final class SmartReorderService
         return $quantity === 1.0 ? 'unit' : 'units';
     }
 
-    private function purchaseMoneyBudget(Collection $blocks): array
+    private function purchaseMoneyBudget(Collection $blocks, int $businessId): array
     {
         $totalCostOfReorder = 0.0;
         foreach ($blocks as $block) {
-            if ($block['isTracked'] && $block['forecast']['method'] !== 'none') {
+            // Blocks carry `trackInventory`; the old `isTracked` key never existed,
+            // so the budget always came back as zero.
+            if ($block['trackInventory'] && $block['forecast']['method'] !== 'none') {
                 $quantity = $block['forecast']['reorderQuantity'];
                 if ($quantity > 0.0) {
-                    $totalCostOfReorder += $quantity * $block['ingredient']->cost_per_unit;
+                    $totalCostOfReorder += $quantity * (float) $block['ingredient']->cost_per_unit;
                 }
             }
         }
 
         return [
             'amount' => round($totalCostOfReorder, 2),
-            'currency' => 'USD',
+            'currency' => Business::find($businessId)?->currency ?? 'USD',
             'note' => 'Estimated cost of suggested reorder quantities at current ingredient cost.',
         ];
     }
@@ -725,23 +764,90 @@ final class SmartReorderService
         return $score;
     }
 
-    private function suggestedParcelsForBusiness(int $businessId): array
+    /**
+     * Attach to every parcel the forecast its supplier lead time would produce,
+     * so a client can show what picking one changes without repeating the
+     * arithmetic. A parcel whose supplier has no lead time changes nothing, so
+     * its preview is null.
+     *
+     * @param  array<int, array<string, mixed>>  $parcels
+     * @return array<int, array<string, mixed>>
+     */
+    private function withParcelPreviews(array $parcels, array $block, array $forecast, int $minCoverageDays): array
     {
-        $parcels = PurchaseOrderItemSuggestedSupplierParcel::forBusiness($businessId)
-            ->with('supplier')
-            ->get();
+        $dailyDemand = (float) $forecast['dailyDemand'];
+        $currentStock = (float) $block['currentStock'];
 
-        return $parcels->groupBy(fn (PurchaseOrderItemSuggestedSupplierParcel $parcel): int => $parcel->product_id)
-            ->map(fn (Collection $parcels, int $productId): array => $parcels->map(fn (PurchaseOrderItemSuggestedSupplierParcel $parcel): array => [
-                'parcelQuantity' => $parcel->parcel_quantity,
-                'parcelCost' => $parcel->parcel_cost,
-                'supplierId' => (string) $parcel->supplier_id,
-                'supplierName' => $parcel->supplier?->name,
-                'supplierLeadTimeDays' => $parcel->supplier?->lead_time_days ?? null,
-            ])->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
-                ->values()
-                ->all()
-            )
+        return array_map(function (array $parcel) use ($dailyDemand, $currentStock, $minCoverageDays, $forecast): array {
+            $leadTimeDays = $parcel['supplierLeadTimeDays'] ?? null;
+
+            if ($leadTimeDays === null || $forecast['method'] === 'none' || $dailyDemand <= 0.0 || $currentStock <= 0.0) {
+                $parcel['preview'] = null;
+
+                return $parcel;
+            }
+
+            $leadTimeDays = max(1, (int) $leadTimeDays);
+            $leadTimeDemand = $dailyDemand * $leadTimeDays;
+            $targetStock = $leadTimeDemand + ($dailyDemand * $minCoverageDays);
+
+            $reorderQuantity = max(0.0, $targetStock - $currentStock);
+            // Whole parcels only: a client can price the reorder exactly as the
+            // supplier sells it, without rounding a fractional case itself.
+            $parcelQuantity = (float) ($parcel['parcelQuantity'] ?? 0.0);
+            $parcelCost = (float) ($parcel['parcelCost'] ?? 0.0);
+            $parcelsRequired = $parcelQuantity > 0.0
+                ? (int) ceil($reorderQuantity / $parcelQuantity)
+                : null;
+
+            $parcel['preview'] = [
+                'leadTimeDays' => $leadTimeDays,
+                'leadTimeDemand' => $leadTimeDemand,
+                'targetStock' => $targetStock,
+                'reorderQuantity' => $reorderQuantity,
+                'predictedStockAtReorderDate' => max(0.0, $currentStock - $leadTimeDemand),
+                'parcelsRequired' => $parcelsRequired,
+                'totalCost' => $parcelsRequired === null ? null : $parcelsRequired * $parcelCost,
+                // Whole parcels can overshoot the cover target by a fraction of
+                // a case; that surplus is what stays on the shelf afterwards.
+                'leftoverStock' => $parcelsRequired === null
+                    ? null
+                    : max(0.0, $currentStock + ($parcelsRequired * $parcelQuantity) - $targetStock),
+            ];
+
+            return $parcel;
+        }, $parcels);
+    }
+
+    /**
+     * Group parcel rows under one foreign key and sort each group by unit cost,
+     * so the cheapest suggested parcel is first for every product or ingredient.
+     *
+     * @return array<int, array<int, array<string, mixed>>>
+     */
+    private function groupParcels(Collection $parcels, string $key): array
+    {
+        return $parcels->groupBy(fn (PurchaseOrderItemSuggestedSupplierParcel $parcel): int => (int) $parcel->{$key})
+            ->map(fn (Collection $group): array => $this->toParcelDtos($group))
+            ->all();
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function toParcelDtos(Collection $parcels): array
+    {
+        return $parcels->map(fn (PurchaseOrderItemSuggestedSupplierParcel $parcel): array => [
+            'parcelQuantity' => $parcel->parcel_quantity,
+            'parcelCost' => $parcel->parcel_cost,
+            // Price per ingredient unit, so parcels can be compared before one
+            // is picked. Four decimals, like every other money value.
+            'unitCost' => (float) $parcel->parcel_quantity > 0.0
+                ? round((float) $parcel->parcel_cost / (float) $parcel->parcel_quantity, 4)
+                : null,
+            'supplierId' => (string) $parcel->supplier_id,
+            'supplierName' => $parcel->supplier?->name,
+            'supplierLeadTimeDays' => $parcel->supplier?->lead_time_days ?? null,
+        ])->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
+            ->values()
             ->all();
     }
 

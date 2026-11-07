@@ -30,4 +30,15 @@ class Refund extends Model
     {
         return $this->belongsTo(Payment::class);
     }
+
+    /**
+     * The sale lines this refund returns to stock.
+     *
+     * Empty for amount-only refunds, which deliberately leave ingredients
+     * deducted because the amount cannot be mapped to quantities.
+     */
+    public function items()
+    {
+        return $this->hasMany(RefundItem::class);
+    }
 }

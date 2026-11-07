@@ -9,9 +9,12 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\RecipeItem;
 use App\Models\Sale;
+use InvalidArgumentException;
 
 class RecipeService
 {
+    public function __construct(protected UnitConverter $units) {}
+
     /**
      * Resolve the effective recipe for a product (and optional variant).
      *
@@ -153,45 +156,165 @@ class RecipeService
     }
 
     /**
-     * Put back every ingredient deducted by the sale (void).
+     * Put back every ingredient the sale still holds (void, or a refund that
+     * returns the whole sale).
+     *
+     * Reversal works off the *net* consumption left on the sale — consumption
+     * movements plus the void movements already written against it — so a
+     * partial refund followed by a full one restores exactly the remainder and
+     * a void that runs twice cannot inflate stock.
      */
     public function reverseForSale(Sale $sale, ?string $reason = null, ?int $actorId = null): void
     {
-        $movements = IngredientMovement::query()
-            ->where('business_id', $sale->business_id)
-            ->where('reference_type', 'sale')
-            ->where('reference_id', $sale->id)
-            ->where('type', 'consumption')
-            ->get();
+        $remaining = $this->remainingConsumption($sale);
 
-        foreach ($movements as $movement) {
-            $quantity = bcmul((string) $movement->quantity, '-1', 4);
+        foreach ($remaining as $entry) {
+            $this->restore($sale, $entry, $entry['quantity'], $reason ?: 'Sale voided', $actorId);
+        }
+    }
+
+    /**
+     * Put back only the ingredients consumed by the returned sale lines.
+     *
+     * Used by item-level refunds. Quantities come from the pieces the refund
+     * returns and the recipe that is live *now*; the restore is capped at what
+     * the sale still holds per ingredient, so a recipe edited after the sale
+     * can never restore more than was deducted.
+     *
+     * @param  array<int, string>  $quantitiesBySaleItemId  sale item id => returned quantity
+     * @return array<int, string> ingredient id => quantity restored
+     */
+    public function reverseSaleItems(
+        Sale $sale,
+        array $quantitiesBySaleItemId,
+        ?string $reason = null,
+        ?int $actorId = null,
+    ): array {
+        $sale->loadMissing('items');
+
+        $remaining = $this->remainingConsumption($sale);
+        $needed = [];
+
+        foreach ($sale->items as $item) {
+            $returned = $quantitiesBySaleItemId[$item->id] ?? null;
+            if ($returned === null || bccomp((string) $returned, '0', 4) <= 0) {
+                continue;
+            }
+
+            $product = $item->product_id ? Product::find($item->product_id) : null;
+            if (! $product) {
+                continue;
+            }
+            $variant = $item->product_variant_id ? ProductVariant::find($item->product_variant_id) : null;
+
+            foreach ($this->linesFor($product, $variant) as $line) {
+                $ingredient = $line['ingredient'];
+                if (! $ingredient->track_inventory) {
+                    continue;
+                }
+                $key = $this->balanceKey((int) $sale->outlet_id, (int) $ingredient->id);
+                $needed[$key] = bcadd(
+                    $needed[$key] ?? '0',
+                    bcmul($line['effective_quantity'], (string) $returned, 4),
+                    4,
+                );
+            }
+        }
+
+        $restored = [];
+
+        foreach ($needed as $key => $quantity) {
+            $entry = $remaining[$key] ?? null;
+            if (! $entry) {
+                continue;
+            }
+
+            // Never give back more than the sale still holds for this
+            // ingredient, even if the recipe grew since it was sold.
+            if (bccomp($quantity, $entry['quantity'], 4) > 0) {
+                $quantity = $entry['quantity'];
+            }
             if (bccomp($quantity, '0', 4) <= 0) {
                 continue;
             }
 
-            $balance = IngredientBalance::lockForUpdate()->firstOrCreate(
-                ['outlet_id' => $movement->outlet_id, 'ingredient_id' => $movement->ingredient_id],
-                ['business_id' => $sale->business_id, 'quantity' => 0],
-            );
-
-            $balance->quantity = bcadd((string) $balance->quantity, $quantity, 4);
-            $balance->save();
-
-            IngredientMovement::create([
-                'business_id' => $sale->business_id,
-                'outlet_id' => $movement->outlet_id,
-                'ingredient_id' => $movement->ingredient_id,
-                'type' => 'void',
-                'quantity' => $quantity,
-                'unit_cost' => $movement->unit_cost,
-                'balance_after' => $balance->quantity,
-                'reference_type' => 'sale',
-                'reference_id' => $sale->id,
-                'reason' => $reason ?: 'Sale voided',
-                'actor_id' => $actorId,
-            ]);
+            $this->restore($sale, $entry, $quantity, $reason ?: 'Refund', $actorId);
+            $restored[(int) $entry['ingredient_id']] = $quantity;
         }
+
+        return $restored;
+    }
+
+    /**
+     * Net quantity still deducted from stock by this sale, per outlet/ingredient.
+     *
+     * Consumption movements are negative and reversal movements positive, so
+     * the signed total inverted is what is still held.
+     *
+     * @return array<string, array{outlet_id: int, ingredient_id: int, unit_cost: string, quantity: string}>
+     */
+    private function remainingConsumption(Sale $sale): array
+    {
+        $rows = IngredientMovement::query()
+            ->where('business_id', $sale->business_id)
+            ->where('reference_type', 'sale')
+            ->where('reference_id', $sale->id)
+            ->whereIn('type', ['consumption', 'void'])
+            ->orderBy('id')
+            ->get();
+
+        $entries = [];
+
+        foreach ($rows as $row) {
+            $key = $this->balanceKey((int) $row->outlet_id, (int) $row->ingredient_id);
+            $entries[$key] ??= [
+                'outlet_id' => (int) $row->outlet_id,
+                'ingredient_id' => (int) $row->ingredient_id,
+                'unit_cost' => (string) $row->unit_cost,
+                'quantity' => '0',
+            ];
+            $entries[$key]['quantity'] = bcadd($entries[$key]['quantity'], (string) $row->quantity, 4);
+        }
+
+        foreach ($entries as $key => $entry) {
+            $held = bcmul($entry['quantity'], '-1', 4);
+            $entries[$key]['quantity'] = bccomp($held, '0', 4) > 0 ? $held : '0';
+        }
+
+        return $entries;
+    }
+
+    private function balanceKey(int $outletId, int $ingredientId): string
+    {
+        return $outletId.':'.$ingredientId;
+    }
+
+    /**
+     * @param  array{outlet_id: int, ingredient_id: int, unit_cost: string}  $entry
+     */
+    private function restore(Sale $sale, array $entry, string $quantity, string $reason, ?int $actorId): void
+    {
+        $balance = IngredientBalance::lockForUpdate()->firstOrCreate(
+            ['outlet_id' => $entry['outlet_id'], 'ingredient_id' => $entry['ingredient_id']],
+            ['business_id' => $sale->business_id, 'quantity' => 0],
+        );
+
+        $balance->quantity = bcadd((string) $balance->quantity, $quantity, 4);
+        $balance->save();
+
+        IngredientMovement::create([
+            'business_id' => $sale->business_id,
+            'outlet_id' => $entry['outlet_id'],
+            'ingredient_id' => $entry['ingredient_id'],
+            'type' => 'void',
+            'quantity' => $quantity,
+            'unit_cost' => $entry['unit_cost'],
+            'balance_after' => $balance->quantity,
+            'reference_type' => 'sale',
+            'reference_id' => $sale->id,
+            'reason' => $reason,
+            'actor_id' => $actorId,
+        ]);
     }
 
     /**
@@ -203,12 +326,23 @@ class RecipeService
         $quantity = (string) $item->quantity;
         $waste = (string) $item->waste_percent;
         $factor = bcadd('1', bcdiv($waste, '100', 8), 8);
-        $effective = bcmul($quantity, $factor, 4);
+
+        // Recipe quantities may be written in their own unit (18 g against an
+        // ingredient stocked in kg); everything downstream works in the
+        // ingredient's stocking unit.
+        $recipeUnit = $this->recipeUnit($item);
+        $inIngredientUnit = $this->units->convert(
+            bcmul($quantity, $factor, 8),
+            $recipeUnit,
+            $ingredient->unit,
+        );
+        $effective = bcadd($inIngredientUnit, '0', 4);
         $lineCost = bcmul($effective, (string) $ingredient->cost_per_unit, 4);
 
         return [
             'ingredient' => $ingredient,
             'quantity' => $quantity,
+            'unit' => $recipeUnit,
             'effective_quantity' => $effective,
             'waste_percent' => $waste,
             'line_cost' => $lineCost,
@@ -216,12 +350,21 @@ class RecipeService
         ];
     }
 
+    private function recipeUnit(RecipeItem $item): ?string
+    {
+        return $this->units->normalise($item->unit) ?? $item->ingredient?->unit;
+    }
+
     private function serializeLine(RecipeItem $item): array
     {
         $ingredient = $item->ingredient;
         $quantity = (string) $item->quantity;
         $waste = (string) $item->waste_percent;
-        $effective = bcmul($quantity, bcadd('1', bcdiv($waste, '100', 8), 8), 4);
+        $recipeUnit = $this->recipeUnit($item);
+        $effective = $ingredient
+            ? $this->units->convert(bcmul($quantity, bcadd('1', bcdiv($waste, '100', 8), 8), 8), $recipeUnit, $ingredient->unit)
+            : '0';
+        $effective = bcadd($effective, '0', 4);
         $unitCost = (string) ($ingredient?->cost_per_unit ?? '0');
 
         return [
@@ -229,7 +372,8 @@ class RecipeService
             'product_variant_id' => $item->product_variant_id ? (string) $item->product_variant_id : null,
             'ingredient_id' => (string) $item->ingredient_id,
             'ingredient_name' => $ingredient?->name,
-            'unit' => $ingredient?->unit,
+            'unit' => $recipeUnit,
+            'ingredient_unit' => $ingredient?->unit,
             'unit_cost' => $unitCost,
             'quantity' => $quantity,
             'waste_percent' => $waste,
@@ -245,10 +389,38 @@ class RecipeService
      * Without a variant id the product-level lines are replaced; with a variant
      * id only that variant's override lines change.
      *
-     * @param  array<int, array{ingredient_id: int, quantity: string|float|int, waste_percent?: string|float|int|null, notes?: string|null}>  $items
+     * @param  array<int, array{ingredient_id: int, quantity: string|float|int, unit?: string|null, waste_percent?: string|float|int|null, notes?: string|null}>  $items
      */
     public function syncRecipe(Product $product, ?ProductVariant $variant, array $items): void
     {
+        // Validate every line first: a rejected unit must not wipe the recipe
+        // that is currently saved.
+        $resolved = [];
+        foreach ($items as $item) {
+            $ingredient = Ingredient::where('id', $item['ingredient_id'])
+                ->where('business_id', $product->business_id)
+                ->first();
+
+            if (! $ingredient) {
+                throw new InvalidArgumentException('Ingredient not found: '.$item['ingredient_id']);
+            }
+
+            $unit = $this->units->normalise($item['unit'] ?? null);
+            if ($unit !== null && ! $this->units->compatible($unit, $ingredient->unit)) {
+                throw new InvalidArgumentException(
+                    "Recipe unit {$unit} cannot be converted to {$ingredient->unit} for {$ingredient->name}"
+                );
+            }
+
+            $resolved[] = [
+                'ingredient_id' => $item['ingredient_id'],
+                'quantity' => $item['quantity'],
+                'unit' => $unit,
+                'waste_percent' => $item['waste_percent'] ?? 0,
+                'notes' => $item['notes'] ?? null,
+            ];
+        }
+
         RecipeItem::query()
             ->where('business_id', $product->business_id)
             ->where('product_id', $product->id)
@@ -256,16 +428,165 @@ class RecipeService
             ->when(! $variant, fn ($query) => $query->whereNull('product_variant_id'))
             ->delete();
 
-        foreach ($items as $item) {
+        foreach ($resolved as $item) {
             RecipeItem::create([
                 'business_id' => $product->business_id,
                 'product_id' => $product->id,
                 'product_variant_id' => $variant?->id,
-                'ingredient_id' => $item['ingredient_id'],
-                'quantity' => $item['quantity'],
-                'waste_percent' => $item['waste_percent'] ?? 0,
-                'notes' => $item['notes'] ?? null,
+                ...$item,
             ]);
         }
+    }
+
+    /**
+     * How many units of a product can still be produced from the outlet's
+     * ingredient stock, and which ingredient is the bottleneck.
+     *
+     * soldable = floor(min(stock / quantity per unit)) across tracked lines.
+     *
+     * @return array{sellable: int|null, unlimited: bool, status: string, limiting: array<string, mixed>|null, lines: array<int, array<string, mixed>>}
+     */
+    public function availabilityFor(Product $product, int $outletId, ?ProductVariant $variant = null): array
+    {
+        $balances = IngredientBalance::query()
+            ->where('business_id', $product->business_id)
+            ->where('outlet_id', $outletId)
+            ->pluck('quantity', 'ingredient_id');
+
+        $sellable = null;
+        $limiting = null;
+        $rows = [];
+
+        foreach ($this->linesFor($product, $variant) as $line) {
+            $ingredient = $line['ingredient'];
+            $perUnit = $line['effective_quantity'];
+
+            if (! $ingredient->track_inventory || bccomp((string) $perUnit, '0', 4) <= 0) {
+                continue;
+            }
+
+            $available = (string) ($balances[$ingredient->id] ?? '0');
+            $possible = (int) bcdiv($available, (string) $perUnit, 0);
+
+            $row = [
+                'ingredient_id' => (string) $ingredient->id,
+                'ingredient_name' => $ingredient->name,
+                'unit' => $ingredient->unit,
+                'available' => bcadd($available, '0', 4),
+                'required_per_unit' => (string) $perUnit,
+                'reorder_level' => (string) $ingredient->reorder_level,
+                'possible' => $possible,
+            ];
+            $rows[] = $row;
+
+            if ($sellable === null || $possible < $sellable) {
+                $sellable = $possible;
+                $limiting = $row;
+            }
+        }
+
+        $unlimited = $sellable === null;
+        $status = 'available';
+        if (! $unlimited) {
+            if ($sellable <= 0) {
+                $status = 'out_of_stock';
+            } elseif ($sellable <= 5 || ($limiting && bccomp((string) $limiting['available'], (string) $limiting['reorder_level'], 4) <= 0)) {
+                $status = 'low_stock';
+            }
+        }
+
+        return [
+            'sellable' => $sellable,
+            'unlimited' => $unlimited,
+            'status' => $status,
+            'limiting' => $limiting,
+            'lines' => $rows,
+        ];
+    }
+
+    /**
+     * Reverse lookup: every ingredient with the products that consume it, the
+     * per-unit quantity in the ingredient's stocking unit, and how many units
+     * of each product the current balance still allows.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function ingredientUsage(int $businessId, int $outletId, ?int $ingredientId = null): array
+    {
+        $ingredients = Ingredient::query()
+            ->where('business_id', $businessId)
+            ->when($ingredientId, fn ($query) => $query->where('id', $ingredientId))
+            ->orderBy('name')
+            ->get();
+
+        $balances = IngredientBalance::query()
+            ->where('business_id', $businessId)
+            ->where('outlet_id', $outletId)
+            ->pluck('quantity', 'ingredient_id');
+
+        $items = RecipeItem::query()
+            ->where('business_id', $businessId)
+            ->whereIn('ingredient_id', $ingredients->pluck('id'))
+            ->with(['product', 'ingredient'])
+            ->get()
+            ->groupBy('ingredient_id');
+
+        $movements = IngredientMovement::query()
+            ->where('business_id', $businessId)
+            ->where('outlet_id', $outletId)
+            ->whereIn('ingredient_id', $ingredients->pluck('id'))
+            ->get(['ingredient_id', 'type', 'quantity'])
+            ->groupBy('ingredient_id');
+
+        return $ingredients->map(function (Ingredient $ingredient) use ($balances, $items, $movements) {
+            $available = (string) ($balances[$ingredient->id] ?? '0');
+
+            $products = collect($items[$ingredient->id] ?? [])->map(function (RecipeItem $item) use ($ingredient, $available) {
+                $recipeUnit = $this->recipeUnit($item);
+                $factor = bcadd('1', bcdiv((string) $item->waste_percent, '100', 8), 8);
+                $perUnit = $this->units->convert(
+                    bcmul((string) $item->quantity, $factor, 8),
+                    $recipeUnit,
+                    $ingredient->unit,
+                );
+                $perUnit = bcadd($perUnit, '0', 4);
+
+                return [
+                    'product_id' => (string) $item->product_id,
+                    'product_name' => $item->product?->name,
+                    'product_variant_id' => $item->product_variant_id ? (string) $item->product_variant_id : null,
+                    'quantity' => (string) $item->quantity,
+                    'unit' => $recipeUnit,
+                    'quantity_in_ingredient_unit' => $perUnit,
+                    'producible' => bccomp($perUnit, '0', 4) > 0 ? (int) bcdiv($available, $perUnit, 0) : null,
+                ];
+            })->values()->all();
+
+            $consumed = '0';
+            $received = '0';
+            foreach ($movements[$ingredient->id] ?? [] as $movement) {
+                $quantity = (string) $movement->quantity;
+                if (in_array($movement->type, ['consumption', 'wastage', 'expired'], true) && bccomp($quantity, '0', 4) < 0) {
+                    $consumed = bcsub($consumed, $quantity, 4);
+                }
+                if ($movement->type === 'purchase' && bccomp($quantity, '0', 4) > 0) {
+                    $received = bcadd($received, $quantity, 4);
+                }
+            }
+
+            return [
+                'ingredient_id' => (string) $ingredient->id,
+                'name' => $ingredient->name,
+                'sku' => $ingredient->sku,
+                'unit' => $ingredient->unit,
+                'remaining' => bcadd($available, '0', 4),
+                'consumed' => bcadd($consumed, '0', 4),
+                'received' => bcadd($received, '0', 4),
+                'reorder_level' => (string) $ingredient->reorder_level,
+                'low_stock' => bccomp($available, (string) $ingredient->reorder_level, 4) <= 0,
+                'track_inventory' => (bool) $ingredient->track_inventory,
+                'products' => $products,
+            ];
+        })->values()->all();
     }
 }

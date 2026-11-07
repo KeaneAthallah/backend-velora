@@ -11,6 +11,7 @@ class Ingredient extends Model
 
     protected $fillable = [
         'business_id', 'name', 'sku', 'unit', 'cost_per_unit', 'reorder_level',
+        'lead_time_days', 'shelf_life_days', 'preferred_supplier_id',
         'track_inventory', 'is_active',
     ];
 
@@ -21,9 +22,27 @@ class Ingredient extends Model
         return [
             'reorder_level' => 'decimal:4',
             'cost_per_unit' => 'decimal:4',
+            'shelf_life_days' => 'decimal:2',
+            'lead_time_days' => 'integer',
             'track_inventory' => 'boolean',
             'is_active' => 'boolean',
         ];
+    }
+
+    /**
+     * Stock on hand across every outlet.
+     *
+     * The reorder copilot forecasts per business, so an ingredient's stock is
+     * the sum of its outlet balances. Eager load `balances` to avoid a query
+     * per ingredient.
+     */
+    public function getCurrentStockAttribute(): float
+    {
+        if ($this->relationLoaded('balances')) {
+            return (float) $this->balances->sum(fn ($balance) => (float) $balance->quantity);
+        }
+
+        return (float) $this->balances()->sum('quantity');
     }
 
     public function business()

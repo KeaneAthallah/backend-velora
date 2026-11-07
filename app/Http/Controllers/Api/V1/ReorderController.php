@@ -19,17 +19,24 @@ final class ReorderController extends Controller
     ) {}
 
     /**
-     * The reorder copilot is scaffolded ahead of its data layer: its forecast
-     * tables and several models do not exist yet. Until those ship, the
-     * endpoints must not throw a 500. They enforce RBAC and then report that
-     * the feature is unavailable.
+     * Two switches, because the copilot's read and write halves landed apart.
+     *
+     * The forecast is read-only and works off the ingredients, recipes and sales
+     * tables. Drafting purchase orders from it needs ingredient-based lines,
+     * which the purchasing schema does not accept yet (`purchase_order_items`
+     * is product-based), so that half stays behind its own flag.
      */
-    private function reorderAvailable(): bool
+    private function forecastAvailable(): bool
     {
         return (bool) config('features.reorder_copilot', false);
     }
 
-    private function notImplemented(Request $request): JsonResponse
+    private function purchaseOrdersAvailable(): bool
+    {
+        return (bool) config('features.reorder_purchase_orders', false);
+    }
+
+    private function notImplemented(Request $request, string $message): JsonResponse
     {
         $this->authz->requirePermission(
             $request->user(),
@@ -39,15 +46,15 @@ final class ReorderController extends Controller
 
         return response()->json([
             'success' => false,
-            'message' => 'The reorder copilot is not available yet.',
+            'message' => $message,
             'code' => 'NOT_IMPLEMENTED',
         ], 501);
     }
 
     public function forecast(Request $request): JsonResponse
     {
-        if (! $this->reorderAvailable()) {
-            return $this->notImplemented($request);
+        if (! $this->forecastAvailable()) {
+            return $this->notImplemented($request, 'The reorder forecast is not available yet.');
         }
 
         $params = Validator::validate($request->all(), [
@@ -72,8 +79,12 @@ final class ReorderController extends Controller
 
     public function suggest(Request $request): JsonResponse
     {
-        if (! $this->reorderAvailable()) {
-            return $this->notImplemented($request);
+        if (! $this->purchaseOrdersAvailable()) {
+            return $this->notImplemented(
+                $request,
+                'Forecasting is available, but drafting purchase orders from it is not: '.
+                'purchase-order lines are product-based until ingredient lines ship.',
+            );
         }
 
         $params = Validator::validate($request->all(), [
@@ -104,8 +115,11 @@ final class ReorderController extends Controller
 
     public function approve(Request $request, int $purchaseOrderItemId): JsonResponse
     {
-        if (! $this->reorderAvailable()) {
-            return $this->notImplemented($request);
+        if (! $this->purchaseOrdersAvailable()) {
+            return $this->notImplemented(
+                $request,
+                'Reordering into a purchase order is not available yet.',
+            );
         }
 
         $params = Validator::validate($request->all(), [
@@ -138,8 +152,11 @@ final class ReorderController extends Controller
 
     public function reject(Request $request, int $purchaseOrderItemId): JsonResponse
     {
-        if (! $this->reorderAvailable()) {
-            return $this->notImplemented($request);
+        if (! $this->purchaseOrdersAvailable()) {
+            return $this->notImplemented(
+                $request,
+                'Reordering into a purchase order is not available yet.',
+            );
         }
 
         $item = $this->smartReorder->rejectItem(

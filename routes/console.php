@@ -15,3 +15,7 @@ Schedule::command('subscriptions:run-lifecycle')->hourly()->withoutOverlapping()
 // Saved reports run at their configured time. The command records the run and
 // marks delivery; the mailer transport is deployment-specific.
 Schedule::command('reports:deliver-due')->hourly()->withoutOverlapping();
+
+// Reorder-level alerts land in the in-app inbox. The command de-duplicates per
+// member, ingredient and outlet within a day, so hourly is safe.
+Schedule::command('inventory:scan-low-stock')->hourly()->withoutOverlapping();

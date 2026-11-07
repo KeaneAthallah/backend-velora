@@ -76,7 +76,6 @@ use App\Http\Controllers\Api\V1\TaxRateController;
 use App\Http\Controllers\Api\V1\UnitController;
 use App\Http\Controllers\Api\V1\WarehouseController;
 use App\Http\Controllers\Api\V1\WarehouseZoneController;
-use App\Http\Controllers\Api\V1\WebhookController;
 use App\Http\Controllers\Api\V1\WebhookEndpointController;
 use App\Http\Controllers\Api\V1\WorkspaceController;
 use Illuminate\Support\Facades\Route;
@@ -268,12 +267,15 @@ Route::prefix('v1')->group(function () {
             Route::get('ingredients', [IngredientController::class, 'index']);
             Route::post('ingredients', [IngredientController::class, 'store']);
             Route::get('ingredients/balances', [IngredientController::class, 'balances']);
+            Route::get('ingredients/dashboard', [IngredientController::class, 'dashboard']);
             Route::post('ingredients/adjust', [IngredientController::class, 'adjust']);
             Route::put('ingredients/{ingredient}', [IngredientController::class, 'update']);
             Route::delete('ingredients/{ingredient}', [IngredientController::class, 'destroy']);
             Route::get('ingredient-movements', [IngredientController::class, 'movements']);
             Route::get('recipes', [RecipeController::class, 'index']);
+            Route::get('recipes/availability', [RecipeController::class, 'availabilityIndex']);
             Route::get('products/{product}/recipe', [RecipeController::class, 'show']);
+            Route::get('products/{product}/availability', [RecipeController::class, 'availability']);
             Route::put('products/{product}/recipe', [RecipeController::class, 'sync']);
 
             // taxes/discounts
@@ -517,9 +519,6 @@ Route::prefix('v1')->group(function () {
             Route::get('sync/cursor', [SyncController::class, 'cursor']);
             Route::post('sync/push', [SyncController::class, 'push']);
             Route::get('sync/pull', [SyncController::class, 'pull']);
-
-            // webhooks (payment)
-            Route::post('webhooks/payment/{provider}', [WebhookController::class, 'payment']);
 
             // In-app notification inbox (per user, no extra permission).
             Route::get('notifications', [NotificationController::class, 'index']);

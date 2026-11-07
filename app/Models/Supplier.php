@@ -10,11 +10,11 @@ class Supplier extends Model
 {
     use HasFactory, SoftDeletes;
 
-    protected $fillable = ['business_id', 'name', 'contact_person', 'phone', 'email', 'address', 'tax_id', 'is_active'];
+    protected $fillable = ['business_id', 'name', 'contact_person', 'phone', 'email', 'address', 'tax_id', 'lead_time_days', 'is_active'];
 
     protected function casts(): array
     {
-        return ['is_active' => 'boolean'];
+        return ['lead_time_days' => 'integer', 'is_active' => 'boolean'];
     }
 
     public function business()

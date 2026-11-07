@@ -9,7 +9,7 @@ class RecipeItem extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['business_id', 'product_id', 'product_variant_id', 'ingredient_id', 'quantity', 'waste_percent', 'notes'];
+    protected $fillable = ['business_id', 'product_id', 'product_variant_id', 'ingredient_id', 'quantity', 'unit', 'waste_percent', 'notes'];
 
     protected function casts(): array
     {
