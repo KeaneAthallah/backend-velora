@@ -9,11 +9,11 @@ class RecipeItem extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['business_id', 'product_id', 'product_variant_id', 'ingredient_id', 'quantity', 'unit', 'waste_percent', 'notes'];
+    protected $fillable = ['business_id', 'product_id', 'product_variant_id', 'ingredient_id', 'quantity', 'unit', 'waste_percent', 'optional', 'notes'];
 
     protected function casts(): array
     {
-        return ['quantity' => 'decimal:4', 'waste_percent' => 'decimal:4'];
+        return ['quantity' => 'decimal:4', 'waste_percent' => 'decimal:4', 'optional' => 'boolean'];
     }
 
     public function business()

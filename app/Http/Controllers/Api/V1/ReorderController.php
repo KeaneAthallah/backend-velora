@@ -21,10 +21,10 @@ final class ReorderController extends Controller
     /**
      * Two switches, because the copilot's read and write halves landed apart.
      *
-     * The forecast is read-only and works off the ingredients, recipes and sales
-     * tables. Drafting purchase orders from it needs ingredient-based lines,
-     * which the purchasing schema does not accept yet (`purchase_order_items`
-     * is product-based), so that half stays behind its own flag.
+     * The forecast is read-only. Drafting purchase orders writes
+     * ingredient-based lines, which purchasing now renders and receiving
+     * restocks into ingredient balances, so both halves are on by default and
+     * can still be turned off independently.
      */
     private function forecastAvailable(): bool
     {
@@ -82,8 +82,7 @@ final class ReorderController extends Controller
         if (! $this->purchaseOrdersAvailable()) {
             return $this->notImplemented(
                 $request,
-                'Forecasting is available, but drafting purchase orders from it is not: '.
-                'purchase-order lines are product-based until ingredient lines ship.',
+                'Drafting purchase orders from the forecast is turned off on this server.',
             );
         }
 
@@ -98,9 +97,13 @@ final class ReorderController extends Controller
             'models.shelfLife' => 'nullable|boolean',
             'models.leadTime' => 'nullable|boolean',
             'supplierId' => 'nullable|integer|min:1',
+            'outletId' => 'nullable|integer|min:1',
             'budget' => 'nullable|numeric|min:0',
             'preferCurrentStockSupplier' => 'nullable|boolean',
         ]);
+
+        // The active outlet is the default receiving location for the draft.
+        $params['outletId'] ??= $request->attributes->get('outlet_id');
 
         $result = $this->smartReorder->suggestPurchaseOrder(
             (int) $request->attributes->get('business_id'),
@@ -118,7 +121,7 @@ final class ReorderController extends Controller
         if (! $this->purchaseOrdersAvailable()) {
             return $this->notImplemented(
                 $request,
-                'Reordering into a purchase order is not available yet.',
+                'Working with drafted reorder lines is turned off on this server.',
             );
         }
 
@@ -155,7 +158,7 @@ final class ReorderController extends Controller
         if (! $this->purchaseOrdersAvailable()) {
             return $this->notImplemented(
                 $request,
-                'Reordering into a purchase order is not available yet.',
+                'Working with drafted reorder lines is turned off on this server.',
             );
         }
 

@@ -22,12 +22,11 @@ return [
 
     /*
      * Write half: `POST /reorder/suggest|items/{item}/approve|reject`. Those
-     * draft purchase orders whose lines are ingredients, while
-     * `purchase_order_items` is product-based (`product_id` is NOT NULL). The
-     * columns exist, but flipping this on writes lines the purchasing screens
-     * and goods receipts do not understand. Off until ingredient lines are a
-     * real purchasing concept.
+     * draft a purchase order whose lines carry `ingredient_id` plus the product
+     * the ingredient belongs to. The purchasing screens display them, and
+     * receiving one restocks `ingredient_balances` (with an
+     * `ingredient_movements` receipt) instead of product inventory.
      */
-    'reorder_purchase_orders' => (bool) env('FEATURES_REORDER_PURCHASE_ORDERS', false),
+    'reorder_purchase_orders' => (bool) env('FEATURES_REORDER_PURCHASE_ORDERS', true),
 
 ];

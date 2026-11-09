@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Ingredient;
 use App\Models\IngredientBalance;
 use App\Models\IngredientMovement;
+use App\Models\ModifierOption;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\RecipeItem;
@@ -100,6 +101,10 @@ class RecipeService
     {
         $sale->loadMissing('items');
         $needed = [];
+        $removals = $this->ingredientRemovals(
+            (int) $sale->business_id,
+            $sale->items->flatMap(fn ($item) => (array) $item->option_ids)->map(fn ($id) => (int) $id)->all(),
+        );
 
         foreach ($sale->items as $item) {
             $product = Product::find($item->product_id);
@@ -109,9 +114,23 @@ class RecipeService
             $variant = $item->product_variant_id ? ProductVariant::find($item->product_variant_id) : null;
             $quantity = (string) $item->quantity;
 
+            $removed = [];
+            foreach ((array) $item->option_ids as $optionId) {
+                if (isset($removals[(int) $optionId])) {
+                    $removed[$removals[(int) $optionId]] = true;
+                }
+            }
+
+            $snapshot = [];
+
             foreach ($this->linesFor($product, $variant) as $line) {
                 $ingredient = $line['ingredient'];
                 if (! $ingredient->track_inventory) {
+                    continue;
+                }
+                // A selected "no milk" option drops the optional milk line; a
+                // required line is never dropped by a modifier.
+                if ($line['optional'] && isset($removed[(int) $ingredient->id])) {
                     continue;
                 }
                 $id = (int) $ingredient->id;
@@ -120,7 +139,21 @@ class RecipeService
                     'ingredient' => $ingredient,
                     'quantity' => bcadd($needed[$id]['quantity'] ?? '0', $consumed, 4),
                 ];
+
+                $snapshot[] = [
+                    'ingredient_id' => $id,
+                    'ingredient_name' => $ingredient->name,
+                    'unit' => $ingredient->unit,
+                    'quantity' => $line['effective_quantity'],
+                    'unit_cost' => (string) $ingredient->cost_per_unit,
+                    'line_cost' => $line['line_cost'],
+                ];
             }
+
+            // What was actually deducted, per unit. Refunds and historical
+            // costs read this rather than the recipe as it looks today.
+            $item->recipe_snapshot = $snapshot;
+            $item->save();
         }
 
         foreach ($needed as $entry) {
@@ -176,10 +209,11 @@ class RecipeService
     /**
      * Put back only the ingredients consumed by the returned sale lines.
      *
-     * Used by item-level refunds. Quantities come from the pieces the refund
-     * returns and the recipe that is live *now*; the restore is capped at what
-     * the sale still holds per ingredient, so a recipe edited after the sale
-     * can never restore more than was deducted.
+     * Used by item-level refunds. Quantities come from the recipe snapshot
+     * written when the line was sold, so editing a recipe later (or serving
+     * the line without an optional ingredient) does not change what a refund
+     * puts back. The restore is capped at what the sale still holds per
+     * ingredient, so it can never inflate stock.
      *
      * @param  array<int, string>  $quantitiesBySaleItemId  sale item id => returned quantity
      * @return array<int, string> ingredient id => quantity restored
@@ -201,6 +235,23 @@ class RecipeService
                 continue;
             }
 
+            $snapshot = $item->recipe_snapshot;
+
+            if (is_array($snapshot)) {
+                foreach ($snapshot as $line) {
+                    $key = $this->balanceKey((int) $sale->outlet_id, (int) $line['ingredient_id']);
+                    $needed[$key] = bcadd(
+                        $needed[$key] ?? '0',
+                        bcmul((string) $line['quantity'], (string) $returned, 4),
+                        4,
+                    );
+                }
+
+                continue;
+            }
+
+            // Sales written before snapshots existed fall back to the live
+            // recipe, capped by what the sale still holds below.
             $product = $item->product_id ? Product::find($item->product_id) : null;
             if (! $product) {
                 continue;
@@ -290,6 +341,31 @@ class RecipeService
     }
 
     /**
+     * Modifier option id => the ingredient it removes, for the options
+     * selected on a sale. Scoped to the business, so a foreign option id is
+     * ignored instead of dropping someone else's ingredient.
+     *
+     * @param  array<int, int>  $optionIds
+     * @return array<int, int>
+     */
+    private function ingredientRemovals(int $businessId, array $optionIds): array
+    {
+        $optionIds = array_values(array_unique(array_filter($optionIds)));
+
+        if ($optionIds === []) {
+            return [];
+        }
+
+        return ModifierOption::query()
+            ->where('business_id', $businessId)
+            ->whereIn('id', $optionIds)
+            ->whereNotNull('removes_ingredient_id')
+            ->pluck('removes_ingredient_id', 'id')
+            ->map(fn ($ingredientId) => (int) $ingredientId)
+            ->all();
+    }
+
+    /**
      * @param  array{outlet_id: int, ingredient_id: int, unit_cost: string}  $entry
      */
     private function restore(Sale $sale, array $entry, string $quantity, string $reason, ?int $actorId): void
@@ -345,6 +421,7 @@ class RecipeService
             'unit' => $recipeUnit,
             'effective_quantity' => $effective,
             'waste_percent' => $waste,
+            'optional' => (bool) $item->optional,
             'line_cost' => $lineCost,
             'item' => $item,
         ];
@@ -377,6 +454,7 @@ class RecipeService
             'unit_cost' => $unitCost,
             'quantity' => $quantity,
             'waste_percent' => $waste,
+            'optional' => (bool) $item->optional,
             'effective_quantity' => $effective,
             'line_cost' => bcmul($effective, $unitCost, 4),
             'notes' => $item->notes,
@@ -389,7 +467,7 @@ class RecipeService
      * Without a variant id the product-level lines are replaced; with a variant
      * id only that variant's override lines change.
      *
-     * @param  array<int, array{ingredient_id: int, quantity: string|float|int, unit?: string|null, waste_percent?: string|float|int|null, notes?: string|null}>  $items
+     * @param  array<int, array{ingredient_id: int, quantity: string|float|int, unit?: string|null, waste_percent?: string|float|int|null, optional?: bool, notes?: string|null}>  $items
      */
     public function syncRecipe(Product $product, ?ProductVariant $variant, array $items): void
     {
@@ -417,6 +495,7 @@ class RecipeService
                 'quantity' => $item['quantity'],
                 'unit' => $unit,
                 'waste_percent' => $item['waste_percent'] ?? 0,
+                'optional' => (bool) ($item['optional'] ?? false),
                 'notes' => $item['notes'] ?? null,
             ];
         }
@@ -475,6 +554,8 @@ class RecipeService
                 'available' => bcadd($available, '0', 4),
                 'required_per_unit' => (string) $perUnit,
                 'reorder_level' => (string) $ingredient->reorder_level,
+                'safety_stock' => (string) $ingredient->safety_stock,
+                'critical' => $ingredient->isCritical($available),
                 'possible' => $possible,
             ];
             $rows[] = $row;
@@ -583,7 +664,9 @@ class RecipeService
                 'consumed' => bcadd($consumed, '0', 4),
                 'received' => bcadd($received, '0', 4),
                 'reorder_level' => (string) $ingredient->reorder_level,
+                'safety_stock' => (string) $ingredient->safety_stock,
                 'low_stock' => bccomp($available, (string) $ingredient->reorder_level, 4) <= 0,
+                'critical' => $ingredient->isCritical($available),
                 'track_inventory' => (bool) $ingredient->track_inventory,
                 'products' => $products,
             ];

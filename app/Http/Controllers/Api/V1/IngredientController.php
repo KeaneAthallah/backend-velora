@@ -57,6 +57,7 @@ class IngredientController extends Controller
                 'quantity' => $quantity,
                 'stock_value' => $value,
                 'low_stock' => bccomp($quantity, (string) $ingredient->reorder_level, 4) <= 0,
+                'critical' => $ingredient->isCritical($quantity),
             ]);
         })->values());
     }
@@ -72,6 +73,7 @@ class IngredientController extends Controller
             'unit' => 'nullable|string|max:32',
             'cost_per_unit' => 'nullable|numeric|min:0',
             'reorder_level' => 'nullable|numeric|min:0',
+            'safety_stock' => 'nullable|numeric|min:0',
             'track_inventory' => 'nullable|boolean',
             'is_active' => 'nullable|boolean',
             'opening_quantity' => 'nullable|numeric',
@@ -91,6 +93,7 @@ class IngredientController extends Controller
                 'unit' => $data['unit'] ?? 'g',
                 'cost_per_unit' => $data['cost_per_unit'] ?? 0,
                 'reorder_level' => $data['reorder_level'] ?? 0,
+                'safety_stock' => $data['safety_stock'] ?? 0,
                 'track_inventory' => $data['track_inventory'] ?? true,
                 'is_active' => $data['is_active'] ?? true,
             ]);
@@ -137,6 +140,7 @@ class IngredientController extends Controller
             'unit' => 'sometimes|string|max:32',
             'cost_per_unit' => 'sometimes|numeric|min:0',
             'reorder_level' => 'sometimes|numeric|min:0',
+            'safety_stock' => 'sometimes|numeric|min:0',
             'track_inventory' => 'sometimes|boolean',
             'is_active' => 'sometimes|boolean',
         ]);

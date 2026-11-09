@@ -11,7 +11,7 @@ class PayrollRun extends Model
 
     protected $table = 'payroll_runs';
 
-    protected $fillable = ['business_id', 'period', 'status', 'approved_by', 'approved_at'];
+    protected $fillable = ['business_id', 'period', 'status', 'approved_by', 'approved_at', 'journal_entry_id'];
 
     protected function casts(): array
     {
@@ -31,5 +31,11 @@ class PayrollRun extends Model
     public function payslips()
     {
         return $this->hasMany(Payslip::class);
+    }
+
+    /** The posted ledger entry for this run, if it has been posted. */
+    public function journalEntry()
+    {
+        return $this->belongsTo(JournalEntry::class);
     }
 }

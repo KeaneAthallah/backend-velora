@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Ingredient extends Model
 {
@@ -11,7 +12,7 @@ class Ingredient extends Model
 
     protected $fillable = [
         'business_id', 'name', 'sku', 'unit', 'cost_per_unit', 'reorder_level',
-        'lead_time_days', 'shelf_life_days', 'preferred_supplier_id',
+        'safety_stock', 'lead_time_days', 'shelf_life_days', 'preferred_supplier_id',
         'track_inventory', 'is_active',
     ];
 
@@ -21,12 +22,24 @@ class Ingredient extends Model
     {
         return [
             'reorder_level' => 'decimal:4',
+            'safety_stock' => 'decimal:4',
             'cost_per_unit' => 'decimal:4',
             'shelf_life_days' => 'decimal:2',
             'lead_time_days' => 'integer',
             'track_inventory' => 'boolean',
             'is_active' => 'boolean',
         ];
+    }
+
+    /**
+     * Stock at or under the safety floor. A zero floor is unset, so nothing is
+     * critical until someone names the level the kitchen must never cross.
+     */
+    public function isCritical(string|float|int $available): bool
+    {
+        $floor = (string) $this->safety_stock;
+
+        return bccomp($floor, '0', 4) > 0 && bccomp((string) $available, $floor, 4) <= 0;
     }
 
     /**
@@ -129,7 +142,7 @@ class Ingredient extends Model
         return self::SHELF_LIFE_UNTRACKED;
     }
 
-    public function preferredSupplier(): ?Supplier
+    public function preferredSupplier(): BelongsTo
     {
         return $this->belongsTo(Supplier::class, 'preferred_supplier_id')->withDefault();
     }

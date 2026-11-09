@@ -5,6 +5,9 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Models\GoodsReceipt;
 use App\Models\GoodsReceiptItem;
+use App\Models\Ingredient;
+use App\Models\IngredientBalance;
+use App\Models\IngredientMovement;
 use App\Models\InventoryBalance;
 use App\Models\InventoryMovement;
 use App\Models\Outlet;
@@ -26,7 +29,7 @@ class PurchaseOrderController extends Controller
     {
         $businessId = $request->attributes->get('business_id');
         $this->authz->requirePermission($request->user(), 'purchasing.view', $businessId);
-        $q = PurchaseOrder::where('business_id', $businessId)->with('items.product', 'supplier', 'outlet');
+        $q = PurchaseOrder::where('business_id', $businessId)->with('items.product', 'items.ingredient', 'supplier', 'outlet');
         if ($request->filled('outlet_id')) {
             $q->where('outlet_id', $request->input('outlet_id'));
         }
@@ -171,7 +174,7 @@ class PurchaseOrderController extends Controller
         }
         $this->authz->requirePermission($request->user(), 'purchasing.view', $businessId);
 
-        return $this->success($purchaseOrder->load('items', 'supplier'));
+        return $this->success($purchaseOrder->load('items.product', 'items.ingredient', 'supplier', 'outlet'));
     }
 
     public function update(Request $request, PurchaseOrder $purchaseOrder)
@@ -270,6 +273,21 @@ class PurchaseOrderController extends Controller
                         "items.$index.quantity" => 'Quantity exceeds the remaining quantity for this line.',
                     ]);
                 }
+                if ($poi->ingredient_id) {
+                    // Copilot lines buy an ingredient into ingredient stock; the
+                    // product on the line is only the catalogue link.
+                    $ingredientBelongs = Ingredient::where('id', $poi->ingredient_id)
+                        ->where('business_id', $businessId)
+                        ->exists();
+                    if (! $ingredientBelongs) {
+                        throw ValidationException::withMessages([
+                            "items.$index.purchase_order_item_id" => 'The line ingredient does not belong to this business.',
+                        ]);
+                    }
+
+                    continue;
+                }
+
                 $productBelongs = Product::where('id', $poi->product_id)
                     ->where('business_id', $businessId)
                     ->exists();
@@ -303,6 +321,35 @@ class PurchaseOrderController extends Controller
                 ]);
                 $poi->received_quantity = bcadd((string) $poi->received_quantity, $qty, 4);
                 $poi->save();
+
+                // A copilot line restocks the ingredient, not the product: the
+                // two inventories are separate, and product stock is only moved
+                // by the product-based purchasing flow.
+                if ($poi->ingredient_id) {
+                    $ingredientBalance = IngredientBalance::lockForUpdate()->firstOrCreate(
+                        ['outlet_id' => $outletId, 'ingredient_id' => $poi->ingredient_id],
+                        ['business_id' => $businessId, 'quantity' => 0]
+                    );
+                    $ingredientBalance->quantity = bcadd((string) $ingredientBalance->quantity, $qty, 4);
+                    $ingredientBalance->save();
+
+                    IngredientMovement::create([
+                        'business_id' => $businessId,
+                        'outlet_id' => $outletId,
+                        'ingredient_id' => $poi->ingredient_id,
+                        'type' => 'receipt',
+                        'quantity' => $qty,
+                        'unit_cost' => $unitCost,
+                        'balance_after' => $ingredientBalance->quantity,
+                        'reference_type' => 'goods_receipt',
+                        'reference_id' => $receipt->id,
+                        'reason' => 'Purchase order '.$po->po_number,
+                        'actor_id' => $request->user()->id,
+                    ]);
+
+                    continue;
+                }
+
                 $bal = InventoryBalance::lockForUpdate()->firstOrCreate(
                     ['outlet_id' => $outletId, 'product_id' => $poi->product_id, 'product_variant_id' => $poi->product_variant_id],
                     ['business_id' => $businessId, 'quantity' => 0, 'reserved_quantity' => 0]
@@ -334,6 +381,6 @@ class PurchaseOrderController extends Controller
             $po->save();
         });
 
-        return $this->success($purchaseOrder->fresh()->load('items'), 'Received');
+        return $this->success($purchaseOrder->fresh()->load('items.product', 'items.ingredient'), 'Received');
     }
 }

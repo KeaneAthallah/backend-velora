@@ -154,6 +154,7 @@ class RecipeController extends Controller
             'items.*.quantity' => 'required|numeric|gt:0',
             'items.*.unit' => 'nullable|string|max:32',
             'items.*.waste_percent' => 'nullable|numeric|min:0|max:100',
+            'items.*.optional' => 'nullable|boolean',
             'items.*.notes' => 'nullable|string|max:255',
         ]);
 
@@ -191,6 +192,7 @@ class RecipeController extends Controller
             'quantity' => $item['quantity'],
             'unit' => $item['unit'] ?? null,
             'waste_percent' => $item['waste_percent'] ?? 0,
+            'optional' => (bool) ($item['optional'] ?? false),
             'notes' => $item['notes'] ?? null,
         ])->all();
 

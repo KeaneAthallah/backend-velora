@@ -13,9 +13,9 @@ use App\Models\Supplier;
 use App\Models\User;
 
 /**
- * The reorder copilot's read half (forecast) works off shipped tables; its write
- * half (drafting purchase orders with ingredient lines) stays behind its own
- * flag because `purchase_order_items` is product-based.
+ * The reorder copilot: the forecast reads recipes and sales, and drafting turns
+ * it into a purchase order whose lines are ingredients. Receiving such a line
+ * restocks ingredient balances, not product inventory.
  */
 function reorderContext($test, string $suffix = 'R'): array
 {
@@ -176,17 +176,98 @@ it('forecasts demand from recipes and sales', function () {
     expect(DB::table('purchase_orders')->count())->toBe(0);
 });
 
-it('keeps purchase-order drafting from the forecast gated', function () {
+it('drafts an ingredient purchase order and receives it into ingredient stock', function () {
     $ctx = reorderContext($this, 'Draft');
+    $data = reorderDataset($this, $ctx);
+    $headers = $ctx['headers'] + ['X-Outlet-Id' => $data['outlet']['id']];
 
-    $this->withHeaders($ctx['headers'])
+    $draft = $this->withHeaders($headers)->postJson('/api/v1/reorder/suggest');
+    $draft->assertStatus(200)->assertJsonPath('success', true);
+
+    $order = $draft->json('data.purchaseOrder');
+    expect($order['number'])->toStartWith('PO-');
+    expect($order['status'])->toBe('draft');
+    expect($order['outletId'])->toBe((string) $data['outlet']['id']);
+    expect($order['items'])->toHaveCount(1);
+
+    $line = $order['items'][0];
+    expect($line['ingredientId'])->toBe((string) $data['ingredient']['id']);
+    expect($line['status'])->toBe('suggested');
+    expect($line['unit'])->toBe('g');
+    expect((float) $line['quantity'])->toBeGreaterThan(0.0);
+    // One whole 1,000 g parcel at 90,000 sets the per-unit price.
+    expect((float) $line['costPerUnit'])->toEqualWithDelta(90.0, 0.0001);
+
+    $this->withHeaders($headers)
+        ->postJson("/api/v1/reorder/items/{$line['id']}/approve")
+        ->assertStatus(200)
+        ->assertJsonPath('data.status', 'approved');
+
+    // Every line decided with at least one accepted leaves the order receivable.
+    $this->withHeaders($headers)
+        ->getJson("/api/v1/purchase-orders/{$order['id']}")
+        ->assertJsonPath('data.status', 'approved');
+
+    $productBefore = (float) DB::table('inventory_balances')
+        ->where('outlet_id', $data['outlet']['id'])
+        ->where('product_id', $data['product']['id'])
+        ->value('quantity');
+    $ingredientBefore = (float) DB::table('ingredient_balances')
+        ->where('outlet_id', $data['outlet']['id'])
+        ->where('ingredient_id', $data['ingredient']['id'])
+        ->value('quantity');
+
+    $this->withHeaders($headers)->postJson("/api/v1/purchase-orders/{$order['id']}/receive", [
+        'items' => [[
+            'purchase_order_item_id' => (int) $line['id'],
+            'quantity' => (float) $line['quantity'],
+        ]],
+    ])->assertStatus(200);
+
+    expect((float) DB::table('ingredient_balances')
+        ->where('outlet_id', $data['outlet']['id'])
+        ->where('ingredient_id', $data['ingredient']['id'])
+        ->value('quantity'))
+        ->toEqualWithDelta($ingredientBefore + (float) $line['quantity'], 0.0001);
+
+    expect(DB::table('ingredient_movements')
+        ->where('ingredient_id', $data['ingredient']['id'])
+        ->where('type', 'receipt')
+        ->exists())->toBeTrue();
+
+    // An ingredient line must not touch product inventory.
+    expect((float) DB::table('inventory_balances')
+        ->where('outlet_id', $data['outlet']['id'])
+        ->where('product_id', $data['product']['id'])
+        ->value('quantity'))
+        ->toEqualWithDelta($productBefore, 0.0001);
+});
+
+it('rejects a drafted line and cancels an order where everything was rejected', function () {
+    $ctx = reorderContext($this, 'Reject');
+    $data = reorderDataset($this, $ctx);
+    $headers = $ctx['headers'] + ['X-Outlet-Id' => $data['outlet']['id']];
+
+    $order = $this->withHeaders($headers)
         ->postJson('/api/v1/reorder/suggest')
-        ->assertStatus(501)
-        ->assertJsonPath('success', false)
-        ->assertJsonPath('code', 'NOT_IMPLEMENTED');
+        ->json('data.purchaseOrder');
+    $line = $order['items'][0];
 
+    $this->withHeaders($headers)
+        ->postJson("/api/v1/reorder/items/{$line['id']}/reject")
+        ->assertStatus(200)
+        ->assertJsonPath('data.status', 'rejected');
+
+    $cancelled = $this->withHeaders($headers)
+        ->getJson("/api/v1/purchase-orders/{$order['id']}")
+        ->assertJsonPath('data.status', 'cancelled');
+
+    expect((float) $cancelled->json('data.total'))->toBe(0.0);
+});
+
+it('keeps both copilot switches on by default', function () {
     expect(config('features.reorder_copilot'))->toBeTrue();
-    expect(config('features.reorder_purchase_orders'))->toBeFalse();
+    expect(config('features.reorder_purchase_orders'))->toBeTrue();
 });
 
 it('enforces RBAC before forecasting', function () {

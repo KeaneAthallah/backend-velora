@@ -7,15 +7,19 @@ namespace App\Services;
 use App\Models\Business;
 use App\Models\Ingredient;
 use App\Models\IngredientPhotoAndUsePattern;
+use App\Models\Outlet;
 use App\Models\Product;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\PurchaseOrderItemApproval;
 use App\Models\PurchaseOrderItemSuggestedSupplierParcel;
 use App\Models\RecipeIngredient;
+use App\Models\Supplier;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 final class SmartReorderService
 {
@@ -165,66 +169,103 @@ final class SmartReorderService
             'models' => $params['models'] ?? ['demand' => true, 'shelfLife' => true, 'leadTime' => true],
         ]);
 
-        $supplierId = (int) ($params['supplierId'] ?? 0);
-        $budget = (float) ($params['budget'] ?? $forecast['purchaseMoneyBudget']['amount']);
+        $requestedSupplierId = (int) ($params['supplierId'] ?? 0);
+        // A cap is opt-in: whole parcels routinely cost more than the forecast's
+        // own per-unit estimate, which would otherwise exclude every line.
+        $budget = (float) ($params['budget'] ?? 0);
         $budgetOkay = $budget <= 0 ? 'unbounded' : 'capped';
         $preferCurrentStockSupplier = (bool) ($params['preferCurrentStockSupplier'] ?? false);
 
         $selections = $this->selectReorderItems(
             $forecast,
-            $supplierId,
+            $requestedSupplierId,
             $budget,
             $budgetOkay,
             $preferCurrentStockSupplier,
             $forecast['suggestedParcelsByProduct'],
         );
 
-        $purchaseOrder = PurchaseOrder::forceCreate([
-            'business_id' => $businessId,
-            'supplier_id' => $supplierId,
-            'outlet_id' => null,
-            'number' => PurchaseOrder::nextNumber($businessId),
-            'status' => 'draft',
-            'expected_at' => Carbon::now()->addDays($this->effectiveLeadTimeDaysForBusiness($forecast, $selections))->toDateString(),
-            'created_by' => $this->auth->currentUser()?->id,
-        ]);
-
-        $total = 0.0;
-        $itemIds = [];
-
-        foreach ($selections as $selection) {
-            $ingredient = Ingredient::forBusiness($businessId)->findOrFail((int) $selection['ingredientId']);
-            $parcel = $this->preferredParcel($ingredient, $selection, $forecast['suggestedParcelsByProduct']);
-            $item = PurchaseOrderItem::create([
-                'purchase_order_id' => $purchaseOrder->id,
-                'product_id' => (int) $ingredient->product_id,
-                'ingredient_id' => (int) $ingredient->id,
-                'quantity' => $selection['quantity'],
-                'unit' => $ingredient->unit,
-                'cost_per_unit' => (float) $ingredient->cost_per_unit,
-                'estimated_total' => $selection['quantity'] * (float) $ingredient->cost_per_unit,
-                'parcel_quantity' => $parcel->parcel_quantity,
-                'parcel_cost' => $parcel->parcel_cost,
-                'supplier_id' => $supplierId,
+        if ($selections === []) {
+            throw ValidationException::withMessages([
+                'items' => 'No ingredient needs reordering with the current stock and budget.',
             ]);
-
-            $itemIds[] = $item->id;
-            $total += $item->estimated_total;
         }
 
-        PurchaseOrder::where('id', $purchaseOrder->id)->update(['total' => round($total, 4)]);
+        $outletId = $this->resolveOutletId($businessId, (int) ($params['outletId'] ?? 0));
+        $supplierId = $this->resolveSupplierId($businessId, $requestedSupplierId, $selections);
 
-        $purchaseOrder->load(['items.ingredient', 'items.product', 'supplier']);
+        $purchaseOrder = DB::transaction(function () use ($businessId, $outletId, $supplierId, $selections) {
+            $order = PurchaseOrder::create([
+                'business_id' => $businessId,
+                'supplier_id' => $supplierId,
+                'outlet_id' => $outletId,
+                'po_number' => $this->nextPurchaseOrderNumber($businessId),
+                'status' => 'draft',
+                'notes' => 'Drafted by the reorder copilot.',
+                'expected_at' => Carbon::now()->addDays($this->effectiveLeadTimeDaysForBusiness($businessId, $selections))->toDateString(),
+                'created_by' => $this->auth->currentUser()?->id,
+            ]);
+
+            $total = 0.0;
+
+            foreach ($selections as $selection) {
+                $ingredient = Ingredient::forBusiness($businessId)->findOrFail((int) $selection['ingredientId']);
+                $quantity = (string) $selection['reorderQuantity'];
+                $parcelQuantity = (float) ($selection['suggestedParcelQuantity'] ?? 0);
+                $parcelCost = (float) ($selection['suggestedParcelCost'] ?? 0);
+                // A whole parcel is one purchase unit: its cost divided by its
+                // size is the honest per-unit price, and rounding to whole
+                // parcels is already baked into the selected quantity.
+                $unitCost = $parcelQuantity > 0 && $parcelCost > 0
+                    ? $parcelCost / $parcelQuantity
+                    : (float) $ingredient->cost_per_unit;
+                $lineTotal = round((float) $quantity * $unitCost, 4);
+
+                PurchaseOrderItem::create([
+                    'purchase_order_id' => $order->id,
+                    // Only a catalogue link: ingredients are not products, and
+                    // not every ingredient is linked to one.
+                    'product_id' => $ingredient->product_id ? (int) $ingredient->product_id : null,
+                    'ingredient_id' => (int) $ingredient->id,
+                    'supplier_id' => $supplierId,
+                    'quantity' => $quantity,
+                    'unit' => $ingredient->unit,
+                    'unit_cost' => $unitCost,
+                    'tax_rate' => 0,
+                    'line_total' => $lineTotal,
+                    'cost_per_unit' => $unitCost,
+                    'estimated_total' => $lineTotal,
+                    'parcel_quantity' => $parcelQuantity > 0 ? $parcelQuantity : null,
+                    'parcel_cost' => $parcelCost > 0 ? $parcelCost : null,
+                    'status' => 'suggested',
+                ]);
+
+                $total += $lineTotal;
+            }
+
+            $order->subtotal = round($total, 4);
+            $order->total = round($total, 4);
+            $order->save();
+
+            return $order;
+        });
+
+        $purchaseOrder->load(['items.ingredient', 'items.product', 'items.approvals', 'supplier', 'outlet']);
 
         return [
             'purchaseOrder' => $this->toPurchaseOrderDto($purchaseOrder),
             'selections' => $this->toSelectionDtoCollection($selections),
-            'budgetUsed' => $total,
-            'budgetLeft' => $budgetOkay === 'capped' ? max(0.0, $budget - $total) : null,
+            'budgetUsed' => (float) $purchaseOrder->total,
+            'budgetLeft' => $budgetOkay === 'capped' ? max(0.0, $budget - (float) $purchaseOrder->total) : null,
             'forecast' => $forecast,
         ];
     }
 
+    /**
+     * Accept a drafted line, optionally at a different quantity or unit cost.
+     * The line is what receiving works from, so the approval is applied to it
+     * rather than only recorded beside it.
+     */
     public function approveItem(
         int $businessId,
         int $purchaseOrderItemId,
@@ -232,15 +273,34 @@ final class SmartReorderService
     ): PurchaseOrderItem {
         $this->auth->requirePermission($this->auth->currentUser(), 'purchasing.manage', $businessId);
 
-        $item = PurchaseOrderItem::forBusiness($businessId)->findOrFail($purchaseOrderItemId);
-        $item->approvals()->create([
-            'approved_by' => $this->auth->currentUser()?->id,
-            'quantity' => $params['quantity'] ?? $item->quantity,
-            'cost_per_unit' => $params['cost_per_unit'] ?? $item->cost_per_unit,
-            'notes' => $params['notes'] ?? null,
-        ]);
+        return DB::transaction(function () use ($businessId, $purchaseOrderItemId, $params) {
+            $item = PurchaseOrderItem::forBusiness($businessId)
+                ->lockForUpdate()
+                ->findOrFail($purchaseOrderItemId);
 
-        return $item->fresh();
+            $quantity = (string) ($params['quantity'] ?? $item->quantity);
+            $unitCost = (string) ($params['cost_per_unit'] ?? $item->cost_per_unit ?? $item->unit_cost);
+            $lineTotal = round((float) $quantity * (float) $unitCost, 4);
+
+            $item->approvals()->create([
+                'approved_by' => $this->auth->currentUser()?->id,
+                'quantity' => $quantity,
+                'cost_per_unit' => $unitCost,
+                'notes' => $params['notes'] ?? null,
+            ]);
+
+            $item->quantity = $quantity;
+            $item->unit_cost = $unitCost;
+            $item->cost_per_unit = $unitCost;
+            $item->line_total = $lineTotal;
+            $item->estimated_total = $lineTotal;
+            $item->status = 'approved';
+            $item->save();
+
+            $this->recalculatePurchaseOrder((int) $item->purchase_order_id);
+
+            return $item->fresh();
+        });
     }
 
     public function rejectItem(
@@ -249,16 +309,131 @@ final class SmartReorderService
     ): PurchaseOrderItem {
         $this->auth->requirePermission($this->auth->currentUser(), 'purchasing.manage', $businessId);
 
-        $item = PurchaseOrderItem::forBusiness($businessId)->findOrFail($purchaseOrderItemId);
-        $item->approvals()->create([
-            'approved_by' => $this->auth->currentUser()?->id,
-            'quantity' => 0,
-            'cost_per_unit' => $item->cost_per_unit,
-            'rejected_at' => now(),
-            'notes' => 'Rejected in reorder copilot',
-        ]);
+        return DB::transaction(function () use ($businessId, $purchaseOrderItemId) {
+            $item = PurchaseOrderItem::forBusiness($businessId)
+                ->lockForUpdate()
+                ->findOrFail($purchaseOrderItemId);
 
-        return $item->fresh();
+            $item->approvals()->create([
+                'approved_by' => $this->auth->currentUser()?->id,
+                'quantity' => 0,
+                'cost_per_unit' => $item->cost_per_unit,
+                'rejected_at' => now(),
+                'notes' => 'Rejected in reorder copilot',
+            ]);
+
+            // A rejected line must not be receivable, so it drops to zero and
+            // stops counting towards the order total.
+            $item->quantity = 0;
+            $item->line_total = 0;
+            $item->estimated_total = 0;
+            $item->status = 'rejected';
+            $item->save();
+
+            $this->recalculatePurchaseOrder((int) $item->purchase_order_id);
+
+            return $item->fresh();
+        });
+    }
+
+    /**
+     * Keep the header totals and status in step with the individual lines: the
+     * order becomes approvable only once every line has been accepted or
+     * rejected, and an order where everything was rejected is cancelled.
+     */
+    private function recalculatePurchaseOrder(int $purchaseOrderId): void
+    {
+        $order = PurchaseOrder::lockForUpdate()->find($purchaseOrderId);
+        if (! $order) {
+            return;
+        }
+
+        $items = PurchaseOrderItem::where('purchase_order_id', $order->id)->get();
+        $total = 0.0;
+        foreach ($items as $item) {
+            if ($item->status !== 'rejected') {
+                $total += (float) $item->line_total;
+            }
+        }
+
+        $order->subtotal = round($total, 4);
+        $order->total = round($total, 4);
+
+        $undecided = $items->contains(fn (PurchaseOrderItem $item) => $item->status === 'suggested');
+        $approved = $items->contains(fn (PurchaseOrderItem $item) => $item->status === 'approved');
+
+        if (! $undecided) {
+            if ($approved) {
+                $order->status = 'approved';
+                $order->approved_by = $order->approved_by ?: $this->auth->currentUser()?->id;
+                $order->approved_at = $order->approved_at ?: now();
+            } else {
+                $order->status = 'cancelled';
+            }
+        }
+
+        $order->save();
+    }
+
+    private function resolveOutletId(int $businessId, int $requested): int
+    {
+        if ($requested > 0) {
+            if (! Outlet::where('id', $requested)->where('business_id', $businessId)->exists()) {
+                throw ValidationException::withMessages([
+                    'outlet_id' => 'The selected outlet does not belong to this business.',
+                ]);
+            }
+
+            return $requested;
+        }
+
+        $fallback = (int) Outlet::where('business_id', $businessId)->orderBy('id')->value('id');
+        if ($fallback === 0) {
+            throw ValidationException::withMessages([
+                'outlet_id' => 'Create an outlet before drafting a purchase order.',
+            ]);
+        }
+
+        return $fallback;
+    }
+
+    private function resolveSupplierId(int $businessId, int $requested, array $selections): int
+    {
+        if ($requested > 0) {
+            if (! Supplier::where('id', $requested)->where('business_id', $businessId)->exists()) {
+                throw ValidationException::withMessages([
+                    'supplier_id' => 'The selected supplier does not belong to this business.',
+                ]);
+            }
+
+            return $requested;
+        }
+
+        foreach ($selections as $selection) {
+            $preferred = (int) Ingredient::forBusiness($businessId)
+                ->whereKey($selection['ingredientId'])
+                ->value('preferred_supplier_id');
+            if ($preferred > 0) {
+                return $preferred;
+            }
+        }
+
+        return (int) Supplier::where('business_id', $businessId)->orderBy('id')->value('id');
+    }
+
+    private function nextPurchaseOrderNumber(int $businessId): string
+    {
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $number = 'PO-'.now()->format('Ymd').'-'.strtoupper(Str::random(6));
+            $taken = PurchaseOrder::where('business_id', $businessId)
+                ->where('po_number', $number)
+                ->exists();
+            if (! $taken) {
+                return $number;
+            }
+        }
+
+        return 'PO-'.now()->format('Ymd').'-'.strtoupper(Str::random(10));
     }
 
     private function salesQuantitiesByProduct(
@@ -588,12 +763,11 @@ final class SmartReorderService
         return 7;
     }
 
-    private function effectiveLeadTimeDaysForBusiness(array $forecast, array $selections): int
+    private function effectiveLeadTimeDaysForBusiness(int $businessId, array $selections): int
     {
         $leadTimeDays = 7;
         foreach ($selections as $selection) {
-            $ingredient = Ingredient::forBusiness($forecast['ingredients'][0]['ingredient']->business_id)
-                ->find((int) $selection['ingredientId']);
+            $ingredient = Ingredient::forBusiness($businessId)->find((int) $selection['ingredientId']);
             if ($ingredient instanceof Ingredient && $ingredient->lead_time_days !== null && $ingredient->lead_time_days > 0) {
                 $leadTimeDays = max($leadTimeDays, (int) $ingredient->lead_time_days);
             }
@@ -667,8 +841,15 @@ final class SmartReorderService
         $budgetRemaining = $budgetOkay === 'capped' ? $budget : null;
 
         foreach ($candidates as $candidate) {
+            // `preferredParcelFromForecast` returns the forecast DTO's camelCase
+            // array (or null), so the parcel is never an Eloquent model here.
             $parcel = $candidate['preferredParcel'];
-            $cost = $parcel?->parcel_cost ?? ($candidate['reorderQuantity'] * $candidate['costPerUnit']);
+            $parcelQuantity = $parcel['parcelQuantity'] ?? null;
+            $parcelCost = $parcel['parcelCost'] ?? null;
+            $hasParcel = $parcelQuantity !== null && (float) $parcelQuantity > 0;
+            $cost = $hasParcel
+                ? (float) $parcelCost
+                : $candidate['reorderQuantity'] * $candidate['costPerUnit'];
 
             if ($budgetRemaining !== null && $cost > $budgetRemaining) {
                 break;
@@ -679,12 +860,12 @@ final class SmartReorderService
                 'name' => $candidate['name'],
                 'unit' => $candidate['unit'],
                 'costPerUnit' => $candidate['costPerUnit'],
-                'reorderQuantity' => $parcel?->parcel_quantity ?? $candidate['reorderQuantity'],
+                'reorderQuantity' => $hasParcel ? $parcelQuantity : $candidate['reorderQuantity'],
                 'estimatedCost' => $cost,
                 'reorderReason' => $candidate['reorderReason'],
                 'wasteRisk' => $candidate['wasteRisk'],
-                'suggestedParcelQuantity' => $parcel?->parcel_quantity,
-                'suggestedParcelCost' => $parcel?->parcel_cost,
+                'suggestedParcelQuantity' => $hasParcel ? $parcelQuantity : null,
+                'suggestedParcelCost' => $hasParcel ? $parcelCost : null,
                 'priorityScore' => $candidate['priorityScore'],
             ];
 
@@ -713,33 +894,6 @@ final class SmartReorderService
         }
 
         return null;
-    }
-
-    private function preferredParcel(Ingredient $ingredient, array $selection, array $suggestedParcelsByProduct): array
-    {
-        $photoPattern = $this->photoPattern($ingredient->photoAndUsePatterns);
-        if ($photoPattern && ! empty($photoPattern['suggestedParcels'])) {
-            $best = collect($photoPattern['suggestedParcels'])
-                ->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
-                ->first();
-            if ($best) {
-                return $best;
-            }
-        }
-
-        $productId = (int) $ingredient->product_id;
-        if (isset($suggestedParcelsByProduct[$productId]) && ! empty($suggestedParcelsByProduct[$productId])) {
-            return collect($suggestedParcelsByProduct[$productId])
-                ->sortBy(fn (array $parcel): float => $parcel['parcelCost'] / max(0.0001, $parcel['parcelQuantity']))
-                ->first();
-        }
-
-        return [
-            'parcel_quantity' => $selection['reorderQuantity'],
-            'parcel_cost' => $selection['estimatedCost'],
-            'supplier_id' => $ingredient->preferredSupplier?->id ?? null,
-            'supplier_name' => $ingredient->preferredSupplier?->name,
-        ];
     }
 
     private function priorityScore(array $ingredient, string $budgetOkay): float
@@ -855,7 +1009,7 @@ final class SmartReorderService
     {
         return [
             'id' => (string) $order->id,
-            'number' => $order->number,
+            'number' => $order->po_number,
             'supplierId' => (string) $order->supplier_id,
             'supplierName' => $order->supplier?->name,
             'outletId' => $order->outlet_id ? (string) $order->outlet_id : null,
@@ -863,7 +1017,7 @@ final class SmartReorderService
             'status' => $order->status,
             'items' => $order->items->map(fn (PurchaseOrderItem $item): array => [
                 'id' => (string) $item->id,
-                'productId' => (string) $item->product_id,
+                'productId' => $item->product_id ? (string) $item->product_id : null,
                 'productName' => $item->product?->name ?? $item->ingredient?->name,
                 'ingredientId' => (string) $item->ingredient_id,
                 'ingredientName' => $item->ingredient?->name,
@@ -902,6 +1056,6 @@ final class SmartReorderService
             'suggestedParcelQuantity' => $selection['suggestedParcelQuantity'],
             'suggestedParcelCost' => $selection['suggestedParcelCost'],
             'priorityScore' => $selection['priorityScore'],
-        ])->values();
+        ])->values()->all();
     }
 }

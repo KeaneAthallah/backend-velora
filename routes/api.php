@@ -44,6 +44,8 @@ use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Api\V1\OutletController;
 use App\Http\Controllers\Api\V1\PaymentController;
 use App\Http\Controllers\Api\V1\PaymentMethodController;
+use App\Http\Controllers\Api\V1\PayrollRunController;
+use App\Http\Controllers\Api\V1\PayrollStructureController;
 use App\Http\Controllers\Api\V1\PermissionController;
 use App\Http\Controllers\Api\V1\PlanController;
 use App\Http\Controllers\Api\V1\PlatformController;
@@ -490,6 +492,21 @@ Route::prefix('v1')->group(function () {
             Route::get('leave-requests', [LeaveRequestController::class, 'index']);
             Route::post('leave-requests', [LeaveRequestController::class, 'store']);
             Route::post('leave-requests/{leaveRequest}/approve', [LeaveRequestController::class, 'approve']);
+
+            // payroll: per-person structures and monthly runs (draft → approved → paid)
+            Route::get('payroll/structures', [PayrollStructureController::class, 'index']);
+            Route::post('payroll/structures', [PayrollStructureController::class, 'store']);
+            Route::put('payroll/structures/{payrollStructure}', [PayrollStructureController::class, 'update']);
+            Route::delete('payroll/structures/{payrollStructure}', [PayrollStructureController::class, 'destroy']);
+            Route::get('payroll/runs', [PayrollRunController::class, 'index']);
+            Route::post('payroll/runs', [PayrollRunController::class, 'store']);
+            Route::get('payroll/runs/{payrollRun}', [PayrollRunController::class, 'show']);
+            Route::post('payroll/runs/{payrollRun}/approve', [PayrollRunController::class, 'approve']);
+            Route::post('payroll/runs/{payrollRun}/pay', [PayrollRunController::class, 'pay']);
+            Route::post('payroll/runs/{payrollRun}/post-journal', [PayrollRunController::class, 'postJournal']);
+            Route::get('payroll/runs/{payrollRun}/export', [PayrollRunController::class, 'export']);
+            Route::delete('payroll/runs/{payrollRun}', [PayrollRunController::class, 'destroy']);
+            Route::put('payroll/runs/{payrollRun}/payslips/{payslip}', [PayrollRunController::class, 'updatePayslip']);
 
             // CRM
             Route::get('customer-groups', [CustomerGroupController::class, 'groups']);

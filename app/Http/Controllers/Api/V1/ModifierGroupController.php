@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Category;
+use App\Models\Ingredient;
 use App\Models\ModifierGroup;
 use App\Models\ModifierOption;
 use App\Models\Product;
@@ -52,6 +53,7 @@ class ModifierGroupController extends Controller
             'options.*.is_default' => 'nullable|boolean',
             'options.*.product_id' => 'nullable|integer',
             'options.*.product_variant_id' => 'nullable|integer',
+            'options.*.removes_ingredient_id' => 'nullable|integer',
         ]);
 
         $data = $this->normalizeGroup($data);
@@ -202,6 +204,7 @@ class ModifierGroupController extends Controller
             'is_active' => 'nullable|boolean',
             'product_id' => 'nullable|integer',
             'product_variant_id' => 'nullable|integer',
+            'removes_ingredient_id' => 'nullable|integer',
         ]);
 
         $option = $this->createOption($modifierGroup, $data, $businessId);
@@ -225,6 +228,7 @@ class ModifierGroupController extends Controller
             'is_active' => 'sometimes|boolean',
             'product_id' => 'sometimes|nullable|integer',
             'product_variant_id' => 'sometimes|nullable|integer',
+            'removes_ingredient_id' => 'sometimes|nullable|integer',
         ]);
 
         $this->validateOptionProduct($data, $businessId);
@@ -271,6 +275,7 @@ class ModifierGroupController extends Controller
             'is_active' => $data['is_active'] ?? true,
             'product_id' => $data['product_id'] ?? null,
             'product_variant_id' => $data['product_variant_id'] ?? null,
+            'removes_ingredient_id' => $data['removes_ingredient_id'] ?? null,
         ]);
     }
 
@@ -289,6 +294,15 @@ class ModifierGroupController extends Controller
                 ->first();
             if (! $variant) {
                 abort(404, 'Product variant not found');
+            }
+        }
+
+        if (! empty($data['removes_ingredient_id'])) {
+            $exists = Ingredient::where('id', $data['removes_ingredient_id'])
+                ->where('business_id', $businessId)
+                ->exists();
+            if (! $exists) {
+                abort(404, 'Ingredient not found');
             }
         }
     }

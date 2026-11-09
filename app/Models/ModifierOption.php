@@ -11,7 +11,7 @@ class ModifierOption extends Model
 
     protected $fillable = [
         'business_id', 'modifier_group_id', 'product_id', 'product_variant_id',
-        'name', 'price_delta', 'is_default', 'sort_order', 'is_active',
+        'removes_ingredient_id', 'name', 'price_delta', 'is_default', 'sort_order', 'is_active',
     ];
 
     protected function casts(): array
@@ -42,5 +42,14 @@ class ModifierOption extends Model
     public function variant()
     {
         return $this->belongsTo(ProductVariant::class, 'product_variant_id');
+    }
+
+    /**
+     * The ingredient this option takes out of the recipe when selected
+     * ("no milk" → milk). Only optional recipe lines are skipped.
+     */
+    public function removesIngredient()
+    {
+        return $this->belongsTo(Ingredient::class, 'removes_ingredient_id');
     }
 }
