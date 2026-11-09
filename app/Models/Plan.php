@@ -126,6 +126,9 @@ class Plan extends Model
             ],
             'limits' => $this->limits ?? [],
             'features' => $this->features ?? [],
+            // `metadata.pricing = custom` marks a plan that is sold by a human
+            // (Enterprise): the pricing page renders no list price for it.
+            'metadata' => $this->metadata ?? [],
         ];
     }
 }

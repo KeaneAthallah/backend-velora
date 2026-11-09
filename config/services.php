@@ -31,9 +31,12 @@ return [
     'google' => [
         'client_id' => env('GOOGLE_CLIENT_ID'),
         'client_secret' => env('GOOGLE_CLIENT_SECRET'),
+        // Must match the URI registered on the OAuth client. The callback is
+        // served at /auth/google/callback (routes/web.php) precisely because
+        // that is the URI registered for local development.
         'redirect' => env(
             'GOOGLE_REDIRECT_URI',
-            rtrim(env('APP_URL', 'http://localhost:8000'), '/').'/api/v1/auth/google/callback'
+            rtrim(env('APP_URL', 'http://localhost:8000'), '/').'/auth/google/callback'
         ),
     ],
 

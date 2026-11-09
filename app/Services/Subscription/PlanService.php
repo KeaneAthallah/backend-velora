@@ -41,6 +41,7 @@ class PlanService
                     'yearly_price' => (int) ($definition['prices']['yearly'] ?? 0),
                     'limits' => $definition['limits'] ?? [],
                     'features' => $definition['features'] ?? [],
+                    'metadata' => $definition['metadata'] ?? null,
                     'supported_industries' => $definition['supported_industries'] ?? null,
                 ]
             );
@@ -75,6 +76,7 @@ class PlanService
                     'yearly_price' => (int) ($definition['prices']['yearly'] ?? 0),
                     'limits' => $definition['limits'] ?? [],
                     'features' => $definition['features'] ?? [],
+                    'metadata' => $definition['metadata'] ?? null,
                     'supported_industries' => $definition['supported_industries'] ?? null,
                 ]
             );
